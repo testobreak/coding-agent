@@ -1,6 +1,6 @@
 # planning/execution_plan.py
 #
-# ExecutionPlan dataclass holding compiled TaskNodes DAG.
+# ExecutionPlan dataclass holding compiled TaskNodes DAG and sequential stages.
 
 import json
 import os
@@ -12,6 +12,25 @@ from planning.task_node import TaskNode
 from planning.task_types import TaskType
 from planning.task_status import TaskStatus
 from planning.planning_strategy import PlanningStrategy
+from planning.task_graph import TaskGraph
+
+@dataclass
+class ExecutionStage:
+    stage_id: str
+    parallel_tasks: List[str]  # list of task IDs
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "stage_id": self.stage_id,
+            "parallel_tasks": self.parallel_tasks
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExecutionStage":
+        return cls(
+            stage_id=data["stage_id"],
+            parallel_tasks=data.get("parallel_tasks", [])
+        )
 
 @dataclass
 class ExecutionPlan:
@@ -19,6 +38,8 @@ class ExecutionPlan:
     plan_id: str = field(default_factory=lambda: str(uuid4()))
     strategy: PlanningStrategy = PlanningStrategy.FEATURE
     tasks: List[TaskNode] = field(default_factory=list)
+    stages: List[ExecutionStage] = field(default_factory=list)
+    graph: Optional[TaskGraph] = None
     created_at: datetime = field(default_factory=datetime.now)
 
     def find_task(self, task_id: str) -> Optional[TaskNode]:
@@ -100,7 +121,6 @@ class ExecutionPlan:
     def is_successful(self) -> bool:
         """
         Returns True if the finished plan has no FAILED tasks.
-        (SKIPPED is okay if it's expected, but usually we want no FAILED status).
         """
         for task in self.tasks:
             if task.status == TaskStatus.FAILED:
@@ -145,23 +165,9 @@ class ExecutionPlan:
             "plan_id": self.plan_id,
             "goal": self.goal,
             "strategy": self.strategy.value,
-            "tasks": [
-                {
-                    "id": t.id,
-                    "type": t.type.value,
-                    "target_symbol": t.target_symbol,
-                    "dependencies": t.dependencies,
-                    "description": t.description,
-                    "status": t.status.value,
-                    "retries": t.retries,
-                    "max_retries": t.max_retries,
-                    "payload": t.payload,
-                    "symbol_id": t.symbol_id,
-                    "symbol_name": t.symbol_name,
-                    "file_id": t.file_id
-                }
-                for t in self.tasks
-            ],
+            "tasks": [t.to_dict() for t in self.tasks],
+            "stages": [s.to_dict() for s in self.stages],
+            "graph": self.graph.to_dict() if self.graph else None,
             "created_at": self.created_at.isoformat()
         }
 
@@ -180,25 +186,22 @@ class ExecutionPlan:
         
         tasks = []
         for t_dict in data.get("tasks", []):
-            tasks.append(TaskNode(
-                id=t_dict["id"],
-                type=TaskType(t_dict["type"]),
-                target_symbol=t_dict.get("target_symbol"),
-                dependencies=t_dict.get("dependencies", []),
-                description=t_dict.get("description", ""),
-                status=TaskStatus(t_dict.get("status", "PENDING")),
-                retries=t_dict.get("retries", 0),
-                max_retries=t_dict.get("max_retries", 3),
-                payload=t_dict.get("payload", {}),
-                symbol_id=t_dict.get("symbol_id"),
-                symbol_name=t_dict.get("symbol_name"),
-                file_id=t_dict.get("file_id")
-            ))
+            tasks.append(TaskNode.from_dict(t_dict))
+            
+        stages = []
+        for s_dict in data.get("stages", []):
+            stages.append(ExecutionStage.from_dict(s_dict))
+            
+        graph_data = data.get("graph")
+        graph = TaskGraph.from_dict(graph_data) if graph_data else None
+
         plan = cls(
             goal=data["goal"],
             plan_id=data.get("plan_id", str(uuid4())),
             strategy=strategy,
             tasks=tasks,
+            stages=stages,
+            graph=graph,
             created_at=created_at
         )
         return plan

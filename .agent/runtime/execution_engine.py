@@ -79,12 +79,45 @@ class ExecutionEngine:
         from planning.graph_scheduler import GraphScheduler
         scheduler = GraphScheduler(plan)
         
-        runnable_tasks = scheduler.next_tasks()
+        # Ensure stages are initialized on execution plan
+        if not plan.stages:
+            plan.stages = scheduler.build_execution_stages()
+            self.state_manager.set_execution_plan(plan)
+            self.state_manager.save_state()
+
+        # Find the first stage that is not fully completed/skipped
+        active_stage = None
+        for stage in plan.stages:
+            stage_finished = True
+            for tid in stage.parallel_tasks:
+                t = plan.find_task(tid)
+                if t and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                    stage_finished = False
+                    break
+            if not stage_finished:
+                active_stage = stage
+                break
+
+        if not active_stage:
+            print("[ExecutionEngine] All execution stages are finished.")
+            if plan.is_finished():
+                outcome = "SUCCESS" if plan.is_successful() else "FAILED"
+                self.execution_memory.complete_episode(plan.plan_id, outcome)
+            return None
+
+        # Filter the scheduler's next runnable tasks to only include those in the active stage
+        scheduler_runnable = scheduler.next_tasks()
+        runnable_tasks = [t for t in scheduler_runnable if t.id in active_stage.parallel_tasks]
+        
         if not runnable_tasks:
-            print("[ExecutionEngine] No runnable tasks left in the plan (blocked or waiting).")
+            running_tasks = [tid for tid in active_stage.parallel_tasks if plan.find_task(tid) and plan.find_task(tid).status == TaskStatus.RUNNING]
+            if running_tasks:
+                print(f"[ExecutionEngine] Waiting for active stage '{active_stage.stage_id}' tasks to complete: {running_tasks}")
+            else:
+                print(f"[ExecutionEngine] Active stage '{active_stage.stage_id}' blocked or wait-gated.")
             return None
             
-        print(f"[ExecutionEngine] Scheduling {len(runnable_tasks)} tasks for parallel execution...")
+        print(f"[ExecutionEngine] Scheduling {len(runnable_tasks)} tasks for parallel execution from stage '{active_stage.stage_id}'...")
         
         # Mark all selected tasks as RUNNING and save state before executing
         for task in runnable_tasks:
@@ -198,10 +231,9 @@ class ExecutionEngine:
                             self.state_manager.set_execution_state(ExecutionState.REPAIRING.value)
                             
                             # Insert repair nodes as dependencies of the verification task
+                            scheduler.insert_new_tasks(repair_tasks)
+                            
                             for rep in repair_tasks:
-                                # Inject to plan tasks list
-                                plan.tasks.append(rep)
-                                
                                 # Log planning/generation of repair
                                 self.execution_memory.log_repair(
                                     episode_id=plan.plan_id,
@@ -216,6 +248,9 @@ class ExecutionEngine:
                             # Re-queue the verification task so it runs again after repairs
                             task.status = TaskStatus.PENDING
                             task.retries = 0
+                            
+                            # Regenerate plan stages topologically after mutations
+                            plan.stages = scheduler.build_execution_stages()
                         else:
                             print("[ExecutionEngine] No repair tasks generated. Marking task as FAILED.")
                             scheduler.mark_failed(task.id)

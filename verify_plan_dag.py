@@ -622,6 +622,71 @@ def test_structured_repair_subgraphs():
     
     print("  [OK] Structured Repair Subgraphs passed.")
 
+def test_task_graph_and_stages():
+    print("[Test] Running TaskGraph & ExecutionStage Scheduler tests...")
+    from planning.task_graph import TaskGraph, SymbolRef, DependencyEdge
+    from planning.graph_scheduler import GraphScheduler
+    
+    # 1. Verify TaskGraph structure
+    graph = TaskGraph()
+    t1 = TaskNode(id="T1", type=TaskType.MODIFY_SYMBOL, target_symbol="MyClass")
+    t2 = TaskNode(id="T2", type=TaskType.VERIFY_BUILD, target_symbol="MyClass")
+    graph.add_node(t1)
+    graph.add_node(t2)
+    graph.add_edge("T1", "T2")
+    
+    assert len(graph.nodes) == 2
+    assert len(graph.edges) == 1
+    assert graph.edges[0].source == "T1"
+    assert graph.edges[0].target == "T2"
+    assert "T1" in t2.dependencies
+    
+    # 2. Verify SymbolRef and TaskNode inputs/outputs
+    t1.inputs = {"code": "class MyClass: pass"}
+    t1.outputs = {"success": True}
+    ref = SymbolRef(symbol_id="sym_123", symbol_name="MyClass", file_id="MyClass.py", repository_id="repo_1")
+    t1.symbol_refs = [ref]
+    
+    # 3. Serialization verification
+    t1_dict = t1.to_dict()
+    assert t1_dict["inputs"] == {"code": "class MyClass: pass"}
+    assert t1_dict["outputs"] == {"success": True}
+    assert len(t1_dict["symbol_refs"]) == 1
+    assert t1_dict["symbol_refs"][0]["symbol_name"] == "MyClass"
+    
+    t1_loaded = TaskNode.from_dict(t1_dict)
+    assert t1_loaded.inputs == {"code": "class MyClass: pass"}
+    assert t1_loaded.outputs == {"success": True}
+    assert len(t1_loaded.symbol_refs) == 1
+    assert t1_loaded.symbol_refs[0].symbol_name == "MyClass"
+    
+    # 4. Verification Plan Stage Compilation
+    plan = ExecutionPlan(goal="SOTA Plan", tasks=[t1, t2], graph=graph)
+    scheduler = GraphScheduler(plan)
+    stages = scheduler.build_execution_stages()
+    
+    assert len(stages) == 2
+    assert stages[0].stage_id == "stage_1"
+    assert stages[0].parallel_tasks == ["T1"]
+    assert stages[1].stage_id == "stage_2"
+    assert stages[1].parallel_tasks == ["T2"]
+    
+    # 5. Dynamic Graph Expansion
+    t3 = TaskNode(id="T3", type=TaskType.RUN_TEST, target_symbol="MyClass", dependencies=["T2"])
+    scheduler.insert_new_tasks([t3])
+    assert len(plan.tasks) == 3
+    assert "T2" in t3.dependencies
+    assert plan.find_task("T3") is not None
+    
+    # Verify stages updated topologically after expansion
+    stages_updated = plan.stages
+    assert len(stages_updated) == 3
+    assert stages_updated[0].parallel_tasks == ["T1"]
+    assert stages_updated[1].parallel_tasks == ["T2"]
+    assert stages_updated[2].parallel_tasks == ["T3"]
+    
+    print("  [OK] TaskGraph & ExecutionStage Scheduler passed.")
+
 def run_all_tests():
     print("\n" + "=" * 60)
     print("  Task DAG Planning & Execution Subsystem Tests")
@@ -640,6 +705,7 @@ def run_all_tests():
         test_graph_scheduler_concurrency_and_exclusion()
         test_workers_and_concurrent_execution()
         test_structured_repair_subgraphs()
+        test_task_graph_and_stages()
         print("\n" + "=" * 60)
         print("  ALL TASK DAG TESTS PASSED SUCCESSFULLY! [OK]")
         print("=" * 60 + "\n")

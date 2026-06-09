@@ -1,7 +1,7 @@
 # planning/graph_scheduler.py
 
 from typing import List, Set, Dict, Any, Optional
-from planning.execution_plan import ExecutionPlan
+from planning.execution_plan import ExecutionPlan, ExecutionStage
 from planning.task_node import TaskNode
 from planning.task_status import TaskStatus
 
@@ -82,3 +82,76 @@ class GraphScheduler:
         if task:
             task.retries += 1
             task.status = TaskStatus.PENDING
+
+    def build_execution_stages(self) -> List[ExecutionStage]:
+        """
+        Group tasks into sequential execution stages, where tasks within the same
+        stage can be executed in parallel (subject to file locking at runtime).
+        """
+        # Build dependency adjacency list and in-degrees
+        in_degree = {}
+        adj = {}
+        for task in self.plan.tasks:
+            in_degree[task.id] = 0
+            adj[task.id] = []
+
+        # Populate edges (dependency: dep_id -> task.id)
+        for task in self.plan.tasks:
+            for dep_id in task.dependencies:
+                if dep_id in in_degree:
+                    adj[dep_id].append(task.id)
+                    in_degree[task.id] += 1
+
+        # Multi-source BFS topological sort
+        stages = []
+        queue = [nid for nid, deg in in_degree.items() if deg == 0]
+        stage_counter = 1
+
+        while queue:
+            # Sort task IDs for deterministic stage order
+            queue.sort()
+            stage_tasks = list(queue)
+            stages.append(ExecutionStage(
+                stage_id=f"stage_{stage_counter}",
+                parallel_tasks=stage_tasks
+            ))
+            stage_counter += 1
+
+            next_queue = []
+            for u in stage_tasks:
+                for v in adj[u]:
+                    in_degree[v] -= 1
+                    if in_degree[v] == 0:
+                        next_queue.append(v)
+            queue = next_queue
+
+        # Fallback for remaining unvisited nodes (if cycle exists)
+        visited = set()
+        for s in stages:
+            visited.update(s.parallel_tasks)
+            
+        remaining = [t.id for t in self.plan.tasks if t.id not in visited]
+        if remaining:
+            remaining.sort()
+            stages.append(ExecutionStage(
+                stage_id=f"stage_{stage_counter}",
+                parallel_tasks=remaining
+            ))
+
+        return stages
+
+    def insert_new_tasks(self, new_tasks: List[TaskNode]):
+        """
+        Inserts new tasks into the ExecutionPlan, updates the underlying TaskGraph,
+        and regenerates the topological execution stages.
+        """
+        for nt in new_tasks:
+            if not self.plan.find_task(nt.id):
+                self.plan.tasks.append(nt)
+                if self.plan.graph:
+                    self.plan.graph.add_node(nt)
+                    for dep in nt.dependencies:
+                        self.plan.graph.add_edge(dep, nt.id)
+                        
+        # Rebuild stages topologically
+        self.plan.stages = self.build_execution_stages()

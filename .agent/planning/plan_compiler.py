@@ -10,6 +10,8 @@ from planning.execution_plan import ExecutionPlan
 from planning.planning_strategy import PlanningStrategy
 from planning.action_schema import Action
 
+from planning.task_graph import TaskGraph, SymbolRef
+
 class PlanCompiler:
     """
     Deterministic compiler that converts a ContextPackage into an ExecutionPlan.
@@ -19,12 +21,11 @@ class PlanCompiler:
     ContextBuilder subsystem.
     """
 
-    def compile(self, context) -> ExecutionPlan:
+    def build_graph(self, context) -> TaskGraph:
         """
-        Primary entry point. Accepts a ContextPackage and returns an ExecutionPlan.
+        Builds the TaskGraph domain model from the ContextPackage.
         """
         strategy = PlanningStrategy.from_context(context)
-        print(f"[PlanCompiler] Selected strategy: {strategy.value}")
 
         # Resolve primary target info
         primary_fqn = None
@@ -55,11 +56,49 @@ class PlanCompiler:
         else:
             tasks = self._build_feature_dag(primary_fqn, primary_file, test_fqns, risk_score)
 
+        graph = TaskGraph()
+        graph.metadata["goal"] = context.goal
+        graph.metadata["strategy"] = strategy.value
+
+        for task in tasks:
+            task.repository_id = "com.hrms"
+            if task.target_symbol:
+                task.symbol_refs = [SymbolRef(
+                    symbol_id=task.symbol_id or f"fqn:{task.target_symbol}",
+                    symbol_name=task.symbol_name or task.target_symbol,
+                    file_id=task.file_id or task.payload.get("file_path"),
+                    repository_id=task.repository_id
+                )]
+            graph.add_node(task)
+
+        for task in tasks:
+            for dep in task.dependencies:
+                graph.add_edge(dep, task.id)
+
+        return graph
+
+    def compile(self, context) -> ExecutionPlan:
+        """
+        Primary entry point. Accepts a ContextPackage, builds a TaskGraph, and returns an ExecutionPlan.
+        """
+        strategy = PlanningStrategy.from_context(context)
+        print(f"[PlanCompiler] Selected strategy: {strategy.value}")
+
+        # Step 2: Separate planning (graph construction) from scheduling
+        graph = self.build_graph(context)
+
         plan = ExecutionPlan(
             goal=context.goal,
             strategy=strategy,
-            tasks=tasks
+            tasks=list(graph.nodes.values()),
+            graph=graph
         )
+
+        # Step 3 & 4: Compile stages via GraphScheduler
+        from planning.graph_scheduler import GraphScheduler
+        scheduler = GraphScheduler(plan)
+        plan.stages = scheduler.build_execution_stages()
+
         return plan
 
     # ------------------------------------------------------------------
