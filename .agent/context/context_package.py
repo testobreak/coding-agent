@@ -226,3 +226,38 @@ class ContextPackage:
             past_plans=data.get("past_plans", []),
             past_repairs=data.get("past_repairs", [])
         )
+
+@dataclass
+class SymbolContextPackage:
+    target_symbol: Optional[SymbolHandle] = None
+    callers: List[SymbolHandle] = field(default_factory=list)
+    callees: List[SymbolHandle] = field(default_factory=list)
+    tests: List[SymbolHandle] = field(default_factory=list)
+    interfaces: List[SymbolHandle] = field(default_factory=list)
+    implementations: List[SymbolHandle] = field(default_factory=list)
+    related_symbols: List[SymbolHandle] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "target_symbol": self.target_symbol.to_dict() if self.target_symbol else None,
+            "callers": [c.to_dict() for c in self.callers],
+            "callees": [c.to_dict() for c in self.callees],
+            "tests": [t.to_dict() for t in self.tests],
+            "interfaces": [i.to_dict() for i in self.interfaces],
+            "implementations": [i.to_dict() for i in self.implementations],
+            "related_symbols": [r.to_dict() for r in self.related_symbols]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SymbolContextPackage":
+        if not data:
+            return cls()
+        return cls(
+            target_symbol=SymbolHandle.from_dict(data.get("target_symbol")),
+            callers=[SymbolHandle.from_dict(c) for c in data.get("callers", [])],
+            callees=[SymbolHandle.from_dict(c) for c in data.get("callees", [])],
+            tests=[SymbolHandle.from_dict(t) for t in data.get("tests", [])],
+            interfaces=[SymbolHandle.from_dict(i) for i in data.get("interfaces", [])],
+            implementations=[SymbolHandle.from_dict(i) for i in data.get("implementations", [])],
+            related_symbols=[SymbolHandle.from_dict(r) for r in data.get("related_symbols", [])]
+        )

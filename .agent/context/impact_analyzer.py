@@ -17,12 +17,16 @@ class ImpactReport:
     affected_symbols: List[SymbolHandle] = field(default_factory=list)
     affected_tests: List[SymbolHandle] = field(default_factory=list)
     risk_score: float = 0.0
+    implementations: List[SymbolHandle] = field(default_factory=list)
+    interfaces: List[SymbolHandle] = field(default_factory=list)
 
     def __repr__(self) -> str:
         return (
             f"ImpactReport("
             f"affected_symbols={len(self.affected_symbols)}, "
             f"affected_tests={len(self.affected_tests)}, "
+            f"implementations={len(self.implementations)}, "
+            f"interfaces={len(self.interfaces)}, "
             f"risk_score={self.risk_score:.2f}"
             f")"
         )
@@ -145,6 +149,47 @@ class ImpactAnalyzer:
                             end_line=hsym.end_line if hsym.end_line is not None else 1
                         ))
 
+            # 2.5 Query implementations & interfaces
+            implementations = []
+            impl_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.target_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.relationship_type.in_(["IMPLEMENTS", "INHERITS", "EXTENDS"])
+            ).all()
+            for rel in impl_relations:
+                if rel.source_symbol_id:
+                    sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                        Symbol.id == rel.source_symbol_id
+                    ).first()
+                    if sym:
+                        implementations.append(SymbolHandle(
+                            symbol_id=str(sym.id),
+                            fqn=sym.qualified_name,
+                            kind=sym.symbol_type or "unknown",
+                            file_path=sym.file.path if sym.file else "",
+                            start_line=sym.start_line if sym.start_line is not None else 1,
+                            end_line=sym.end_line if sym.end_line is not None else 1
+                        ))
+
+            interfaces = []
+            iface_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.source_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.relationship_type.in_(["IMPLEMENTS", "INHERITS", "EXTENDS"])
+            ).all()
+            for rel in iface_relations:
+                if rel.target_symbol_id:
+                    sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                        Symbol.id == rel.target_symbol_id
+                    ).first()
+                    if sym:
+                        interfaces.append(SymbolHandle(
+                            symbol_id=str(sym.id),
+                            fqn=sym.qualified_name,
+                            kind=sym.symbol_type or "unknown",
+                            file_path=sym.file.path if sym.file else "",
+                            start_line=sym.start_line if sym.start_line is not None else 1,
+                            end_line=sym.end_line if sym.end_line is not None else 1
+                        ))
+
             # 3. Calculate Risk Score
             # Base risk: 0.10
             # Scale based on size of blast radius
@@ -165,6 +210,8 @@ class ImpactAnalyzer:
         except Exception as e:
             print(f"[ImpactAnalyzer] Warning: Impact analysis failed: {e}")
             risk_score = 0.50
+            implementations = []
+            interfaces = []
         finally:
             if close_session:
                 db_sess.close()
@@ -172,5 +219,7 @@ class ImpactAnalyzer:
         return ImpactReport(
             affected_symbols=affected_symbols,
             affected_tests=affected_tests,
+            implementations=implementations,
+            interfaces=interfaces,
             risk_score=round(risk_score, 2)
         )

@@ -17,7 +17,8 @@ from context.context_package import (
     GoalIntent,
     ResolvedSymbol,
     ContextRadius,
-    Snippet
+    Snippet,
+    SymbolContextPackage
 )
 from editing.symbol_handle import SymbolHandle
 from context.goal_analyzer import GoalAnalyzer
@@ -363,6 +364,154 @@ class ContextBuilder:
                 primary_symbol=None,
                 intent=self.analyzer.analyze(goal),
                 previous_attempts=[]
+            )
+        finally:
+            if close_session and db_sess:
+                db_sess.close()
+
+    def build_symbol_context_package(self, target_symbol: SymbolHandle, session=None) -> SymbolContextPackage:
+        """
+        Traverses the codebase relationship graph to construct a SymbolContextPackage.
+        """
+        db_sess = session
+        close_session = False
+        if db_sess is None:
+            db_sess = SessionLocal()
+            close_session = True
+        
+        try:
+            # Query callers
+            callers = []
+            caller_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.target_symbol_id == target_symbol.symbol_id
+            ).all()
+            caller_ids = [rel.source_symbol_id for rel in caller_relations if rel.source_symbol_id]
+            if caller_ids:
+                db_callers = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                    Symbol.id.in_(caller_ids)
+                ).all()
+                for sym in db_callers:
+                    callers.append(SymbolHandle(
+                        symbol_id=str(sym.id),
+                        fqn=sym.qualified_name,
+                        kind=sym.symbol_type or "unknown",
+                        file_path=sym.file.path if sym.file else "",
+                        start_line=sym.start_line if sym.start_line is not None else 1,
+                        end_line=sym.end_line if sym.end_line is not None else 1
+                    ))
+
+            # Query callees
+            callees = []
+            callee_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.source_symbol_id == target_symbol.symbol_id
+            ).all()
+            for rel in callee_relations:
+                if rel.target_symbol_id:
+                    sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                        Symbol.id == rel.target_symbol_id
+                    ).first()
+                    if sym:
+                        callees.append(SymbolHandle(
+                            symbol_id=str(sym.id),
+                            fqn=sym.qualified_name,
+                            kind=sym.symbol_type or "unknown",
+                            file_path=sym.file.path if sym.file else "",
+                            start_line=sym.start_line if sym.start_line is not None else 1,
+                            end_line=sym.end_line if sym.end_line is not None else 1
+                        ))
+
+            # Query tests
+            tests = []
+            symbol_ids_for_test = [target_symbol.symbol_id]
+            db_tests = db_sess.query(DBTest, File.path).join(File, DBTest.file_id == File.id).filter(
+                DBTest.target_symbol_id.in_(symbol_ids_for_test)
+            ).all()
+            for t, file_path in db_tests:
+                tsym = db_sess.query(Symbol).filter(
+                    Symbol.name == t.name,
+                    Symbol.file_id == t.file_id
+                ).first()
+                if tsym:
+                    tests.append(SymbolHandle(
+                        symbol_id=str(tsym.id),
+                        fqn=tsym.qualified_name,
+                        kind=tsym.symbol_type or "class",
+                        file_path=file_path,
+                        start_line=tsym.start_line,
+                        end_line=tsym.end_line
+                    ))
+
+            # Query interfaces
+            interfaces = []
+            iface_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.source_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.relationship_type.in_(["IMPLEMENTS", "INHERITS", "EXTENDS"])
+            ).all()
+            for rel in iface_relations:
+                if rel.target_symbol_id:
+                    sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                        Symbol.id == rel.target_symbol_id
+                    ).first()
+                    if sym:
+                        interfaces.append(SymbolHandle(
+                            symbol_id=str(sym.id),
+                            fqn=sym.qualified_name,
+                            kind=sym.symbol_type or "unknown",
+                            file_path=sym.file.path if sym.file else "",
+                            start_line=sym.start_line if sym.start_line is not None else 1,
+                            end_line=sym.end_line if sym.end_line is not None else 1
+                        ))
+
+            # Query implementations
+            implementations = []
+            impl_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.target_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.relationship_type.in_(["IMPLEMENTS", "INHERITS", "EXTENDS"])
+            ).all()
+            for rel in impl_relations:
+                if rel.source_symbol_id:
+                    sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                        Symbol.id == rel.source_symbol_id
+                    ).first()
+                    if sym:
+                        implementations.append(SymbolHandle(
+                            symbol_id=str(sym.id),
+                            fqn=sym.qualified_name,
+                            kind=sym.symbol_type or "unknown",
+                            file_path=sym.file.path if sym.file else "",
+                            start_line=sym.start_line if sym.start_line is not None else 1,
+                            end_line=sym.end_line if sym.end_line is not None else 1
+                        ))
+
+            # Query related symbols (e.g. DTOs, USES/DEPENDS relations)
+            related_symbols = []
+            rel_relations = db_sess.query(SymbolRelationship).filter(
+                SymbolRelationship.source_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.relationship_type.in_(["USES", "DEPENDS"])
+            ).all()
+            for rel in rel_relations:
+                if rel.target_symbol_id:
+                    sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
+                        Symbol.id == rel.target_symbol_id
+                    ).first()
+                    if sym:
+                        related_symbols.append(SymbolHandle(
+                            symbol_id=str(sym.id),
+                            fqn=sym.qualified_name,
+                            kind=sym.symbol_type or "unknown",
+                            file_path=sym.file.path if sym.file else "",
+                            start_line=sym.start_line if sym.start_line is not None else 1,
+                            end_line=sym.end_line if sym.end_line is not None else 1
+                        ))
+
+            return SymbolContextPackage(
+                target_symbol=target_symbol,
+                callers=callers,
+                callees=callees,
+                tests=tests,
+                interfaces=interfaces,
+                implementations=implementations,
+                related_symbols=related_symbols
             )
         finally:
             if close_session and db_sess:

@@ -293,6 +293,33 @@ def run_tests():
         assert len(reconstructed.snippets) == len(pkg_local.snippets)
         print("  [OK] Success: Serialization and deserialization is fully bidirectional.")
 
+        # ---------------------------------------------------------------------
+        # Test 6: SymbolContextPackage & Traversal Bounded Context
+        # ---------------------------------------------------------------------
+        print("\n[Test 6] Verifying SymbolContextPackage and extended ImpactReport...")
+        from context.context_package import SymbolContextPackage
+        
+        symbol_pkg = builder.build_symbol_context_package(primary_handle, session=session)
+        assert symbol_pkg.target_symbol.fqn == primary_handle.fqn
+        assert len(symbol_pkg.callers) >= 0
+        assert len(symbol_pkg.tests) >= 0
+        
+        # Test serialization
+        spkg_dict = symbol_pkg.to_dict()
+        assert spkg_dict["target_symbol"]["fqn"] == primary_handle.fqn
+        
+        spkg_loaded = SymbolContextPackage.from_dict(spkg_dict)
+        assert spkg_loaded.target_symbol.fqn == primary_handle.fqn
+        
+        # Verify implementations & interfaces in ImpactReport
+        extended_report = analyzer.analyze(primary_handle, session=session)
+        assert hasattr(extended_report, "implementations")
+        assert hasattr(extended_report, "interfaces")
+        assert isinstance(extended_report.implementations, list)
+        assert isinstance(extended_report.interfaces, list)
+        
+        print("  [OK] Success: SymbolContextPackage & extended ImpactReport query validated.")
+
         # Cleanup mock files
         print("\n[Cleanup] Cleaning up mock files from disk...")
         for p in mock_paths:

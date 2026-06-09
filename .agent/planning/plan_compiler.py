@@ -56,19 +56,43 @@ class PlanCompiler:
         else:
             tasks = self._build_feature_dag(primary_fqn, primary_file, test_fqns, risk_score)
 
+        symbol_ctx = None
+        if context.primary_symbol:
+            try:
+                from context.context_builder import ContextBuilder
+                builder = ContextBuilder(retrieval_pipeline=None)
+                symbol_ctx = builder.build_symbol_context_package(context.primary_symbol)
+            except Exception as e:
+                print(f"[PlanCompiler] SymbolContextPackage compilation warning: {e}")
+
         graph = TaskGraph()
         graph.metadata["goal"] = context.goal
         graph.metadata["strategy"] = strategy.value
+        if symbol_ctx:
+            graph.metadata["symbol_context"] = symbol_ctx.to_dict()
 
         for task in tasks:
             task.repository_id = "com.hrms"
             if task.target_symbol:
-                task.symbol_refs = [SymbolRef(
-                    symbol_id=task.symbol_id or f"fqn:{task.target_symbol}",
-                    symbol_name=task.symbol_name or task.target_symbol,
-                    file_id=task.file_id or task.payload.get("file_path"),
-                    repository_id=task.repository_id
-                )]
+                symbol_refs = []
+                if symbol_ctx:
+                    all_handles = [symbol_ctx.target_symbol] + symbol_ctx.callers + symbol_ctx.callees + symbol_ctx.tests + symbol_ctx.interfaces + symbol_ctx.implementations + symbol_ctx.related_symbols
+                    for handle in all_handles:
+                        if handle and (handle.fqn == task.target_symbol or handle.fqn.split(".")[-1] == task.target_symbol):
+                            symbol_refs.append(SymbolRef(
+                                symbol_id=handle.symbol_id,
+                                symbol_name=handle.fqn,
+                                file_id=handle.file_path,
+                                repository_id=task.repository_id
+                            ))
+                if not symbol_refs:
+                    symbol_refs.append(SymbolRef(
+                        symbol_id=task.symbol_id or f"fqn:{task.target_symbol}",
+                        symbol_name=task.symbol_name or task.target_symbol,
+                        file_id=task.file_id or task.payload.get("file_path"),
+                        repository_id=task.repository_id
+                    ))
+                task.symbol_refs = symbol_refs
             graph.add_node(task)
 
         for task in tasks:
