@@ -1,0 +1,129 @@
+{
+  "realm": "hrms",
+  "displayName": "HRMS",
+  "displayNameHtml": "<strong>HRMS</strong>",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "verifyEmail": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 5,
+  "accessTokenLifespan": 900,
+  "accessTokenLifespanForImplicitFlow": 900,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "offlineSessionIdleTimeout": 2592000,
+  "passwordPolicy": "length(10) and notUsername and notEmail and digits(1) and upperCase(1) and lowerCase(1)",
+  "roles": {
+    "realm": [
+      { "name": "SUPER_ADMIN",     "description": "Full system access; audit log viewer" },
+      { "name": "HR_ADMIN",        "description": "Manage employees, salary, documents, appraisals" },
+      { "name": "FINANCE_ADMIN",   "description": "Salary read/write, billing, finance reports" },
+      { "name": "LEADERSHIP",      "description": "Aggregated dashboards; never raw salary amounts" },
+      { "name": "MANAGER",         "description": "Manage direct reports; appraisal cycles for team" },
+      { "name": "PROJECT_MANAGER", "description": "Manage projects, allocations, project-level billing inputs" },
+      { "name": "EMPLOYEE",        "description": "Self-service: own profile, own salary, own documents" }
+    ]
+  },
+  "defaultRoles": ["EMPLOYEE"],
+  "defaultRole": {
+    "name": "default-roles-hrms",
+    "composite": true,
+    "composites": {
+      "realm": ["EMPLOYEE"],
+      "client": {
+        "account": ["view-profile", "manage-account"]
+      }
+    },
+    "clientRole": false,
+    "containerId": "hrms"
+  },
+  "clients": [
+    {
+      "clientId": "hrms-frontend",
+      "name": "HRMS Frontend (React + Vite)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "rootUrl": "http://localhost:5173",
+      "baseUrl": "http://localhost:5173/",
+      "redirectUris": [
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "fullScopeAllowed": true,
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "email"],
+      "optionalClientScopes": ["address", "phone", "offline_access", "microprofile-jwt"]
+    },
+    {
+      "clientId": "hrms-api",
+      "name": "HRMS Backend API (Spring Boot)",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "fullScopeAllowed": true
+    }
+  ],
+  "users": [
+    {
+      "username": "admin@acme.local",
+      "email": "admin@acme.local",
+      "firstName": "Local",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "Admin#12345", "temporary": true }
+      ],
+      "realmRoles": ["SUPER_ADMIN", "HR_ADMIN", "FINANCE_ADMIN"]
+    },
+    {
+      "username": "hr@acme.local",
+      "email": "hr@acme.local",
+      "firstName": "Hira",
+      "lastName": "HR",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "Hr#1234567", "temporary": true }
+      ],
+      "realmRoles": ["HR_ADMIN"]
+    },
+    {
+      "username": "employee@acme.local",
+      "email": "employee@acme.local",
+      "firstName": "Emp",
+      "lastName": "Loyee",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "Emp#1234567", "temporary": true }
+      ],
+      "realmRoles": ["EMPLOYEE"]
+    }
+  ],
+  "smtpServer": {}
+}

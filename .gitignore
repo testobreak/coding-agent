@@ -1,0 +1,82 @@
+# --- Secrets ----------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.jks
+
+# --- Java / Maven -----------------------------------------------------------
+target/
+build/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+hs_err_pid*
+.mvn/wrapper/maven-wrapper.jar
+
+# --- Node / Vite ------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+.cache/
+*.tsbuildinfo
+coverage/
+playwright-report/
+test-results/
+
+# --- IDE --------------------------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.fleet/
+
+# --- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# --- Docker volumes / runtime artifacts -------------------------------------
+infra/.volumes/
+
+# --- Generated -------------------------------------------------------------
+frontend/src/api/generated/
+backend/src/main/generated/
+
+# --- Database / SQLite -----------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python cache/tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Local LLM/context dumps
+project_dump.txt
+*_dump.txt

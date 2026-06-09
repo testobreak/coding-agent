@@ -1,0 +1,582 @@
+[
+  {
+    "timestamp": "2026-06-09T11:46:31.307896",
+    "plan_id": "unknown",
+    "status": "SUCCESS",
+    "build_success": true,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 0,
+    "issues": [],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': True}",
+        "timestamp": "2026-06-09T11:46:31.307737"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:46:32.664944",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "SYNTAX_ERROR",
+        "file": "syntax_error.java",
+        "line": null,
+        "message": "Mismatched braces at line 12",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:46:32.665449",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:46:32.665971",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": true,
+    "tests_success": false,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "TEST_FAILURE",
+        "file": "src/Service.java",
+        "line": null,
+        "message": "AssertionError: Expected 200, got 500",
+        "severity": "HIGH",
+        "category": "TEST_REGRESSION"
+      }
+    ],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': False, 'failures': [{'test_class': 'ServiceTest', 'test_method': 'testSave', 'error_type': 'AssertionError', 'message': 'Expected 200, got 500', 'likely_source_files': ['src/Service.java']}]}",
+        "timestamp": "2026-06-09T11:46:32.665934"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:51:07.381426",
+    "plan_id": "unknown",
+    "status": "SUCCESS",
+    "build_success": true,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 0,
+    "issues": [],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': True}",
+        "timestamp": "2026-06-09T11:51:07.381389"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:51:08.731855",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "SYNTAX_ERROR",
+        "file": "syntax_error.java",
+        "line": null,
+        "message": "Mismatched braces at line 12",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:51:08.732427",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:51:08.733031",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": true,
+    "tests_success": false,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "TEST_FAILURE",
+        "file": "src/Service.java",
+        "line": null,
+        "message": "AssertionError: Expected 200, got 500",
+        "severity": "HIGH",
+        "category": "TEST_REGRESSION"
+      }
+    ],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': False, 'failures': [{'test_class': 'ServiceTest', 'test_method': 'testSave', 'error_type': 'AssertionError', 'message': 'Expected 200, got 500', 'likely_source_files': ['src/Service.java']}]}",
+        "timestamp": "2026-06-09T11:51:08.732992"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:51:08.749133",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:51:32.681578",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:52:50.873871",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "SYNTAX_ERROR",
+        "file": "syntax_error.java",
+        "line": null,
+        "message": "Mismatched braces at line 12",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:52:50.874693",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:52:50.875257",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": true,
+    "tests_success": false,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "TEST_FAILURE",
+        "file": "src/Service.java",
+        "line": null,
+        "message": "AssertionError: Expected 200, got 500",
+        "severity": "HIGH",
+        "category": "TEST_REGRESSION"
+      }
+    ],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': False, 'failures': [{'test_class': 'ServiceTest', 'test_method': 'testSave', 'error_type': 'AssertionError', 'message': 'Expected 200, got 500', 'likely_source_files': ['src/Service.java']}]}",
+        "timestamp": "2026-06-09T11:52:50.875216"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:52:50.897798",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:53:02.392684",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:56:22.597997",
+    "plan_id": "unknown",
+    "status": "SUCCESS",
+    "build_success": true,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 0,
+    "issues": [],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': True}",
+        "timestamp": "2026-06-09T11:56:22.597958"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:56:24.201484",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "SYNTAX_ERROR",
+        "file": "syntax_error.java",
+        "line": null,
+        "message": "Mismatched braces at line 12",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:56:24.202351",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:56:24.203297",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": true,
+    "tests_success": false,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "TEST_FAILURE",
+        "file": "src/Service.java",
+        "line": null,
+        "message": "AssertionError: Expected 200, got 500",
+        "severity": "HIGH",
+        "category": "TEST_REGRESSION"
+      }
+    ],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': False, 'failures': [{'test_class': 'ServiceTest', 'test_method': 'testSave', 'error_type': 'AssertionError', 'message': 'Expected 200, got 500', 'likely_source_files': ['src/Service.java']}]}",
+        "timestamp": "2026-06-09T11:56:24.203260"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T11:56:24.220048",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T11:56:34.387150",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T12:10:23.838458",
+    "plan_id": "unknown",
+    "status": "SUCCESS",
+    "build_success": true,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 0,
+    "issues": [],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T12:11:04.622269",
+    "plan_id": "unknown",
+    "status": "SUCCESS",
+    "build_success": true,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 0,
+    "issues": [],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': True}",
+        "timestamp": "2026-06-09T12:11:04.622225"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T12:11:06.363815",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "SYNTAX_ERROR",
+        "file": "syntax_error.java",
+        "line": null,
+        "message": "Mismatched braces at line 12",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T12:11:06.364867",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T12:11:06.365936",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": true,
+    "tests_success": false,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "TEST_FAILURE",
+        "file": "src/Service.java",
+        "line": null,
+        "message": "AssertionError: Expected 200, got 500",
+        "severity": "HIGH",
+        "category": "TEST_REGRESSION"
+      }
+    ],
+    "evidence": [
+      {
+        "name": "test_runner_stdout",
+        "content": "{'success': False, 'failures': [{'test_class': 'ServiceTest', 'test_method': 'testSave', 'error_type': 'AssertionError', 'message': 'Expected 200, got 500', 'likely_source_files': ['src/Service.java']}]}",
+        "timestamp": "2026-06-09T12:11:06.365899"
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-06-09T12:11:06.419219",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T12:11:27.789542",
+    "plan_id": "unknown",
+    "status": "FAILED",
+    "build_success": false,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 1,
+    "issues": [
+      {
+        "type": "COMPILATION_ERROR",
+        "file": "compile_error.java",
+        "line": 42,
+        "message": "cannot find symbol",
+        "severity": "HIGH",
+        "category": "UNKNOWN_ERROR"
+      }
+    ],
+    "evidence": []
+  },
+  {
+    "timestamp": "2026-06-09T12:11:49.668778",
+    "plan_id": "unknown",
+    "status": "SUCCESS",
+    "build_success": true,
+    "tests_success": true,
+    "lint_success": true,
+    "issues_count": 0,
+    "issues": [],
+    "evidence": []
+  }
+]
