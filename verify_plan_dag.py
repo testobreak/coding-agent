@@ -36,6 +36,10 @@ class MockTestRunner:
     def run_backend_tests(self, test_filter=None):
         return {"success": True}
 
+class MockLLM:
+    def chat(self, messages):
+        raise Exception("Mock LLM error to trigger fallback")
+
 class MockExecutor:
     def __init__(self):
         self.dispatched = []
@@ -45,7 +49,7 @@ class MockExecutor:
         self.tests = MockTestRunner()
         self.impact_analyzer = None
         class MockModifier:
-            llm = None
+            llm = MockLLM()
         self.modifier = MockModifier()
 
     def dispatch(self, tool, args):
@@ -481,6 +485,143 @@ def test_plan_persistence():
 
     print("  [OK] ExecutionPlan persistence passed.")
 
+def test_symbol_metadata_serialization():
+    print("[Test] Running Symbol Metadata Serialization tests...")
+    t = TaskNode(
+        id="T_META",
+        type=TaskType.MODIFY_SYMBOL,
+        target_symbol="ClassA",
+        symbol_id="fqn:ClassA",
+        symbol_name="ClassA",
+        file_id="src/ClassA.py"
+    )
+    plan = ExecutionPlan(goal="Test metadata", tasks=[t])
+    plan_dict = plan.to_dict()
+    
+    # Assert serialized dict contains correct metadata
+    task_dict = plan_dict["tasks"][0]
+    assert task_dict["symbol_id"] == "fqn:ClassA"
+    assert task_dict["symbol_name"] == "ClassA"
+    assert task_dict["file_id"] == "src/ClassA.py"
+    
+    # Assert deserialized plan has the correct fields
+    loaded_plan = ExecutionPlan.from_dict(plan_dict)
+    loaded_task = loaded_plan.find_task("T_META")
+    assert loaded_task is not None
+    assert loaded_task.symbol_id == "fqn:ClassA"
+    assert loaded_task.symbol_name == "ClassA"
+    assert loaded_task.file_id == "src/ClassA.py"
+    
+    print("  [OK] Symbol Metadata Serialization passed.")
+
+def test_graph_scheduler_concurrency_and_exclusion():
+    print("[Test] Running GraphScheduler Concurrency & File Mutual Exclusion tests...")
+    from planning.graph_scheduler import GraphScheduler
+    
+    # T1 edits fileA, T2 edits fileA, T3 edits fileB (all independent and PENDING)
+    t1 = TaskNode(id="T1", type=TaskType.MODIFY_SYMBOL, payload={"file_path": "fileA.py"})
+    t2 = TaskNode(id="T2", type=TaskType.MODIFY_SYMBOL, payload={"file_path": "fileA.py"})
+    t3 = TaskNode(id="T3", type=TaskType.MODIFY_SYMBOL, payload={"file_path": "fileB.py"})
+    
+    plan = ExecutionPlan(goal="Exclusion test", tasks=[t1, t2, t3])
+    scheduler = GraphScheduler(plan)
+    
+    # T1 and T3 should run; T2 should be excluded because fileA.py is locked by T1
+    next_batch = scheduler.next_tasks()
+    next_ids = [t.id for t in next_batch]
+    assert "T1" in next_ids
+    assert "T3" in next_ids
+    assert "T2" not in next_ids
+    
+    # Mark T1 as RUNNING
+    scheduler.mark_started("T1")
+    
+    # Try next tasks: only T3 can run (T2 is still blocked by running T1)
+    next_batch_2 = scheduler.next_tasks()
+    next_ids_2 = [t.id for t in next_batch_2]
+    assert "T3" in next_ids_2
+    assert "T2" not in next_ids_2
+    
+    # Mark T3 as RUNNING, and then complete T1
+    scheduler.mark_started("T3")
+    scheduler.mark_completed("T1")
+    
+    # Now T2 is runnable since fileA.py is released by T1 (and T3 runs on fileB.py)
+    next_batch_3 = scheduler.next_tasks()
+    next_ids_3 = [t.id for t in next_batch_3]
+    assert "T2" in next_ids_3
+    
+    print("  [OK] GraphScheduler Concurrency & File Mutual Exclusion passed.")
+
+def test_workers_and_concurrent_execution():
+    print("[Test] Running Workers & Concurrent Execution tests...")
+    
+    t1 = TaskNode(id="T1", type=TaskType.RETRIEVE_CONTEXT, target_symbol="MyClass", payload={"file_path": "fileA.py"})
+    t2 = TaskNode(id="T2", type=TaskType.ANALYZE_FAILURE, target_symbol="MyClass", payload={"file_path": "fileB.py"})
+    
+    plan = ExecutionPlan(goal="Worker execution", tasks=[t1, t2])
+    executor = MockExecutor()
+    state_mgr = MockStateManager(plan)
+    engine = ExecutionEngine(executor, state_mgr)
+    
+    engine.run()
+    
+    updated_plan = state_mgr.get_execution_plan()
+    assert updated_plan.find_task("T1").status == TaskStatus.COMPLETED
+    assert updated_plan.find_task("T2").status == TaskStatus.COMPLETED
+    
+    dispatched_ops = [d[0] for d in executor.dispatched]
+    assert "retrieve_symbol" in dispatched_ops
+    assert "analyze_symbol" in dispatched_ops
+    
+    print("  [OK] Workers & Concurrent Execution passed.")
+
+def test_structured_repair_subgraphs():
+    print("[Test] Running Structured Repair Subgraphs tests...")
+    from execution.verification_result import VerificationResult, VerificationStatus, BuildResult, LintResult, TestResult, VerificationIssue
+    
+    t_verify = TaskNode(id="T_VERIFY", type=TaskType.VERIFY_BUILD, payload={"file_path": "fileA.py"})
+    plan = ExecutionPlan(goal="Repair test", tasks=[t_verify])
+    
+    executor = MockExecutor()
+    state_mgr = MockStateManager(plan)
+    engine = ExecutionEngine(executor, state_mgr)
+    
+    def mock_verify(v_plan):
+        return VerificationResult(
+            status=VerificationStatus.FAILED,
+            build_result=BuildResult(success=False, errors=["Import error"]),
+            lint_result=LintResult(success=True),
+            test_result=TestResult(success=True),
+            issues=[VerificationIssue(type="COMPILATION_ERROR", file="fileA.py", line=5, message="Import error", symbol="some_symbol")]
+        )
+    engine.verification_engine.verify = mock_verify
+    
+    engine.run()
+    
+    updated_plan = state_mgr.get_execution_plan()
+    t_verify_updated = updated_plan.find_task("T_VERIFY")
+    assert t_verify_updated.status == TaskStatus.PENDING
+    
+    task_ids = [t.id for t in updated_plan.tasks]
+    assert any(tid.startswith("diagnose_") for tid in task_ids)
+    assert any(tid.startswith("retrieve_context_") for tid in task_ids)
+    assert any(tid.startswith("patch_") for tid in task_ids)
+    assert any(tid.startswith("revalidate_") for tid in task_ids)
+    
+    diagnose_id = [tid for tid in task_ids if tid.startswith("diagnose_")][0]
+    retrieve_id = [tid for tid in task_ids if tid.startswith("retrieve_context_")][0]
+    patch_id = [tid for tid in task_ids if tid.startswith("patch_")][0]
+    revalidate_id = [tid for tid in task_ids if tid.startswith("revalidate_")][0]
+    
+    assert updated_plan.find_task(retrieve_id).dependencies == [diagnose_id]
+    assert updated_plan.find_task(patch_id).dependencies == [retrieve_id]
+    assert updated_plan.find_task(revalidate_id).dependencies == [patch_id]
+    
+    assert revalidate_id in t_verify_updated.dependencies
+    
+    print("  [OK] Structured Repair Subgraphs passed.")
+
 def run_all_tests():
     print("\n" + "=" * 60)
     print("  Task DAG Planning & Execution Subsystem Tests")
@@ -495,11 +636,17 @@ def run_all_tests():
         test_plan_compiler_strategies()
         test_risk_aware_lint_injection()
         test_plan_persistence()
+        test_symbol_metadata_serialization()
+        test_graph_scheduler_concurrency_and_exclusion()
+        test_workers_and_concurrent_execution()
+        test_structured_repair_subgraphs()
         print("\n" + "=" * 60)
         print("  ALL TASK DAG TESTS PASSED SUCCESSFULLY! [OK]")
         print("=" * 60 + "\n")
     except AssertionError as ae:
         print(f"\n[FAIL] Assertion Failure: {ae}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
     except Exception as e:
         print(f"\n[FAIL] Exception: {e}")

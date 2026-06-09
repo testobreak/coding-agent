@@ -155,7 +155,10 @@ class ExecutionPlan:
                     "status": t.status.value,
                     "retries": t.retries,
                     "max_retries": t.max_retries,
-                    "payload": t.payload
+                    "payload": t.payload,
+                    "symbol_id": t.symbol_id,
+                    "symbol_name": t.symbol_name,
+                    "file_id": t.file_id
                 }
                 for t in self.tasks
             ],
@@ -186,7 +189,10 @@ class ExecutionPlan:
                 status=TaskStatus(t_dict.get("status", "PENDING")),
                 retries=t_dict.get("retries", 0),
                 max_retries=t_dict.get("max_retries", 3),
-                payload=t_dict.get("payload", {})
+                payload=t_dict.get("payload", {}),
+                symbol_id=t_dict.get("symbol_id"),
+                symbol_name=t_dict.get("symbol_name"),
+                file_id=t_dict.get("file_id")
             ))
         plan = cls(
             goal=data["goal"],

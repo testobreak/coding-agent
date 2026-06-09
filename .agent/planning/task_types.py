@@ -17,6 +17,7 @@ class TaskType(Enum):
     
     # Failure handling and transactional types
     ANALYZE_FAILURE = "analyze_failure"
+    RETRIEVE_CONTEXT = "retrieve_context"
     REPAIR_FAILURE = "repair_failure"
     REPAIR_SYMBOL = "repair_symbol"
     REPAIR_IMPORTS = "repair_imports"

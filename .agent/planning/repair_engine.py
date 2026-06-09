@@ -61,7 +61,8 @@ class RepairEngine:
 
     def repair(self, result: VerificationResult, goal: str, key: str = "unknown") -> List[TaskNode]:
         """
-        Classifies issues inside VerificationResult and coordinates repair task planning.
+        Classifies issues inside VerificationResult and coordinates repair task planning,
+        generating a structured Repair Subgraph DAG (Diagnose -> Retrieve -> Patch -> Revalidate).
         """
         self.increment_attempts(key)
         
@@ -69,5 +70,74 @@ class RepairEngine:
         for issue in result.issues:
             issue.category = self.classifier.classify(issue.type, issue.message)
             
-        # 2. Plan repair tasks using the planner
-        return self.planner.plan_repairs(result, goal)
+        # 2. Plan flat repair tasks using the planner
+        flat_repairs = self.planner.plan_repairs(result, goal)
+        if not flat_repairs:
+            return []
+            
+        from planning.task_types import TaskType
+        from planning.task_status import TaskStatus
+        
+        subgraph_nodes = []
+        for idx, rep in enumerate(flat_repairs):
+            diag_id = f"diag_{key}_{idx}"
+            
+            # 1. Diagnose Task
+            diagnose_node = TaskNode(
+                id=f"diagnose_{diag_id}",
+                type=TaskType.ANALYZE_FAILURE,
+                description=f"Diagnose failure: {rep.description}",
+                dependencies=[],
+                status=TaskStatus.PENDING,
+                payload=rep.payload,
+                symbol_id=rep.symbol_id,
+                symbol_name=rep.symbol_name or rep.target_symbol,
+                file_id=rep.file_id or rep.payload.get("file_path")
+            )
+            diagnose_node.target_symbol = rep.target_symbol
+            
+            # 2. Retrieve Context Task
+            retrieve_node = TaskNode(
+                id=f"retrieve_context_{diag_id}",
+                type=TaskType.RETRIEVE_CONTEXT,
+                description=f"Retrieve repair context for {rep.target_symbol or 'failure'}",
+                dependencies=[diagnose_node.id],
+                status=TaskStatus.PENDING,
+                payload=rep.payload,
+                symbol_id=rep.symbol_id,
+                symbol_name=rep.symbol_name or rep.target_symbol,
+                file_id=rep.file_id or rep.payload.get("file_path")
+            )
+            retrieve_node.target_symbol = rep.target_symbol
+            
+            # 3. Patch/Repair Task (maps to the original planned repair node)
+            patch_node = TaskNode(
+                id=f"patch_{diag_id}",
+                type=rep.type,
+                description=rep.description,
+                dependencies=[retrieve_node.id],
+                status=TaskStatus.PENDING,
+                payload=rep.payload,
+                symbol_id=rep.symbol_id,
+                symbol_name=rep.symbol_name or rep.target_symbol,
+                file_id=rep.file_id or rep.payload.get("file_path")
+            )
+            patch_node.target_symbol = rep.target_symbol
+            
+            # 4. Revalidate Task
+            revalidate_node = TaskNode(
+                id=f"revalidate_{diag_id}",
+                type=TaskType.VERIFY_BUILD,
+                description=f"Revalidate repair patch for {rep.target_symbol or 'failure'}",
+                dependencies=[patch_node.id],
+                status=TaskStatus.PENDING,
+                payload=rep.payload,
+                symbol_id=rep.symbol_id,
+                symbol_name=rep.symbol_name or rep.target_symbol,
+                file_id=rep.file_id or rep.payload.get("file_path")
+            )
+            revalidate_node.target_symbol = rep.target_symbol
+            
+            subgraph_nodes.extend([diagnose_node, retrieve_node, patch_node, revalidate_node])
+            
+        return subgraph_nodes

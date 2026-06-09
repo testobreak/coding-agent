@@ -17,6 +17,11 @@ class TaskNode:
     retries: int = 0
     max_retries: int = 3
     payload: dict = field(default_factory=dict)
+    
+    # Precise symbol-level metadata
+    symbol_id: str | None = None
+    symbol_name: str | None = None
+    file_id: str | None = None
 
     @property
     def depends_on(self) -> list[str]:

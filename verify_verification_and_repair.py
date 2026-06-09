@@ -173,8 +173,11 @@ def test_repair_engine_and_budget():
     )
     
     tasks = engine.repair(res, "Goal", key=plan_id)
-    assert len(tasks) == 1
-    assert tasks[0].type.value == "repair_imports"
+    assert len(tasks) == 4
+    assert tasks[0].type.value == "analyze_failure"
+    assert tasks[1].type.value == "retrieve_context"
+    assert tasks[2].type.value == "repair_imports"
+    assert tasks[3].type.value == "verify_build"
     assert engine.get_attempts(plan_id) == 1
     assert engine.check_budget(plan_id) is True
     

@@ -14,6 +14,13 @@ class ExecutionEngine:
         from execution.verification_engine import VerificationEngine
         from planning.repair_engine import RepairEngine
         from memory.experience_store import ExecutionMemory
+        from planning.workers import (
+            RetrievalWorker,
+            AnalysisWorker,
+            EditWorker,
+            ValidationWorker,
+            RepairWorker
+        )
         
         self.verification_engine = VerificationEngine(
             file_manager=self.executor.file_manager,
@@ -25,11 +32,28 @@ class ExecutionEngine:
         )
         self.repair_engine = RepairEngine(llm=self.executor.modifier.llm, max_attempts=3)
         self.execution_memory = ExecutionMemory()
+        
+        self.workers = {
+            TaskType.RETRIEVE_CONTEXT: RetrievalWorker(self.executor, self.verification_engine),
+            TaskType.ANALYZE_FAILURE: AnalysisWorker(self.executor, self.verification_engine),
+            TaskType.MODIFY_SYMBOL: EditWorker(self.executor, self.verification_engine),
+            TaskType.CREATE_SYMBOL: EditWorker(self.executor, self.verification_engine),
+            TaskType.DELETE_SYMBOL: EditWorker(self.executor, self.verification_engine),
+            TaskType.UPDATE_TEST: EditWorker(self.executor, self.verification_engine),
+            TaskType.RUN_TEST: ValidationWorker(self.executor, self.verification_engine),
+            TaskType.VERIFY_BUILD: ValidationWorker(self.executor, self.verification_engine),
+            TaskType.VERIFY_TESTS: ValidationWorker(self.executor, self.verification_engine),
+            TaskType.VERIFY_LINT: ValidationWorker(self.executor, self.verification_engine),
+            TaskType.REPAIR_IMPORTS: RepairWorker(self.executor, self.verification_engine),
+            TaskType.REPAIR_COMPILATION: RepairWorker(self.executor, self.verification_engine),
+            TaskType.REPAIR_SYMBOL: RepairWorker(self.executor, self.verification_engine),
+            TaskType.REPAIR_FAILURE: RepairWorker(self.executor, self.verification_engine),
+        }
 
     def run(self):
         """
-        Execute the next ready task from the ExecutionPlan DAG.
-        If no ExecutionPlan exists, falls back to legacy action queue runner.
+        Execute ready tasks from the ExecutionPlan DAG concurrently,
+        enforcing mutual exclusion on file paths.
         """
         plan = self.state_manager.get_execution_plan()
         if not plan:
@@ -52,154 +76,164 @@ class ExecutionEngine:
             self.execution_memory.complete_episode(plan.plan_id, outcome)
             return None
             
-        runnable_tasks = plan.get_runnable_tasks()
+        from planning.graph_scheduler import GraphScheduler
+        scheduler = GraphScheduler(plan)
+        
+        runnable_tasks = scheduler.next_tasks()
         if not runnable_tasks:
-            print("[ExecutionEngine] No runnable tasks left in the plan.")
+            print("[ExecutionEngine] No runnable tasks left in the plan (blocked or waiting).")
             return None
             
-        # Select the first runnable task
-        task = runnable_tasks[0]
+        print(f"[ExecutionEngine] Scheduling {len(runnable_tasks)} tasks for parallel execution...")
         
-        # 1. Update State Machine
-        if task.type in (TaskType.VERIFY_BUILD, TaskType.RUN_TEST, TaskType.VERIFY_TESTS, TaskType.VERIFY_LINT, TaskType.VERIFY_CHANGES):
-            self.state_manager.set_execution_state(ExecutionState.VERIFYING.value)
-        elif task.type in (TaskType.REPAIR_IMPORTS, TaskType.REPAIR_COMPILATION, TaskType.REPAIR_SYMBOL, TaskType.REPAIR_FAILURE):
-            self.state_manager.set_execution_state(ExecutionState.REPAIRING.value)
-        else:
-            self.state_manager.set_execution_state(ExecutionState.EXECUTING.value)
+        # Mark all selected tasks as RUNNING and save state before executing
+        for task in runnable_tasks:
+            scheduler.mark_started(task.id)
+            # Log task started event
+            self.execution_memory.log_event(plan.plan_id, "TASK_STARTED", {
+                "task_id": task.id,
+                "type": task.type.value,
+                "description": task.description
+            })
             
-        task.status = TaskStatus.RUNNING
         self.state_manager.set_execution_plan(plan)
         self.state_manager.save_state()
         
-        print(f"\n[ExecutionEngine] Running task: {task.id} ({task.type.value}) - {task.description}")
+        # Execute tasks in parallel using ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor
         
-        success = False
-        result = None
-        error_msg = ""
+        # Helper execution function
+        def worker_exec(t):
+            try:
+                res = self.execute_task_via_worker(t, plan)
+                return t.id, True, res, ""
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return t.id, False, None, str(e)
+                
+        results = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_task = {executor.submit(worker_exec, t): t for t in runnable_tasks}
+            for future in future_to_task:
+                tid, success, res, err = future.result()
+                results[tid] = (success, res, err)
+                
+        # Process outcomes synchronously after execution
+        # Re-fetch plan and scheduler to ensure fresh references
+        plan = self.state_manager.get_execution_plan()
+        scheduler = GraphScheduler(plan)
         
-        # Log task started event
-        self.execution_memory.log_event(plan.plan_id, "TASK_STARTED", {
-            "task_id": task.id,
-            "type": task.type.value,
-            "description": task.description
-        })
-        
-        try:
-            result = self.execute_task(task, plan)
+        for task in plan.tasks:
+            if task.id not in results:
+                continue
+                
+            success, result, error_msg = results[task.id]
             
-            # Check for verification result specifically
-            if isinstance(result, VerificationResult):
+            # Additional result checking for validation results
+            if success and isinstance(result, VerificationResult):
                 success = result.success
                 if not success:
-                    # We have diagnostics to handle
                     error_msg = f"Verification failed with {len(result.diagnostics)} diagnostics."
-            elif isinstance(result, dict) and not result.get("success", False):
+            elif success and isinstance(result, dict) and not result.get("success", False):
                 success = False
                 error_msg = result.get("error", "Task execution failed.")
-            else:
-                success = True
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            success = False
-            error_msg = str(e)
-            
-        if success:
-            print(f"[ExecutionEngine] Task {task.id} COMPLETED successfully.")
-            plan.mark_completed(task.id)
-            state = self.state_manager.get_state()
-            if task.id not in state.completed_steps:
-                state.completed_steps.append(task.id)
                 
-            self.execution_memory.log_event(plan.plan_id, "TASK_COMPLETED", {
-                "task_id": task.id,
-                "status": "COMPLETED",
-                "success": True
-            })
-            if task.type in (TaskType.REPAIR_IMPORTS, TaskType.REPAIR_COMPILATION, TaskType.REPAIR_SYMBOL, TaskType.REPAIR_FAILURE):
-                self.execution_memory.log_repair(
-                    episode_id=plan.plan_id,
-                    repair_type=task.type.value,
-                    target=task.target_symbol,
-                    description=task.description,
-                    success=True
-                )
-        else:
-            print(f"[ExecutionEngine] Task {task.id} FAILED: {error_msg}")
-            
-            self.execution_memory.log_event(plan.plan_id, "TASK_COMPLETED", {
-                "task_id": task.id,
-                "status": "FAILED",
-                "success": False,
-                "error": error_msg
-            })
-            
-            # If it's a verification task failure, invoke repair planner
-            if isinstance(result, VerificationResult) and not result.success:
-                # Log failures to failure record
-                for diag in result.diagnostics:
-                    self.execution_memory.log_failure(
+            if success:
+                print(f"[ExecutionEngine] Task {task.id} COMPLETED successfully.")
+                scheduler.mark_completed(task.id)
+                state = self.state_manager.get_state()
+                if task.id not in state.completed_steps:
+                    state.completed_steps.append(task.id)
+                    
+                self.execution_memory.log_event(plan.plan_id, "TASK_COMPLETED", {
+                    "task_id": task.id,
+                    "status": "COMPLETED",
+                    "success": True
+                })
+                if task.type in (TaskType.REPAIR_IMPORTS, TaskType.REPAIR_COMPILATION, TaskType.REPAIR_SYMBOL, TaskType.REPAIR_FAILURE):
+                    self.execution_memory.log_repair(
                         episode_id=plan.plan_id,
-                        failure_type=diag.type,
-                        file_path=diag.file_path,
-                        line=diag.line,
-                        symbol=diag.symbol,
-                        message=diag.message
+                        repair_type=task.type.value,
+                        target=task.target_symbol,
+                        description=task.description,
+                        success=True
                     )
-                    
-                # Enforce retry budget using RepairEngine
-                if not self.repair_engine.check_budget(plan):
-                    print(f"[ExecutionEngine] Repair budget exhausted ({self.repair_engine.get_attempts(plan.plan_id)} attempts). Failing task {task.id}.")
-                    plan.mark_failed(task.id)
-                    state = self.state_manager.get_state()
-                    if task.id not in state.failed_steps:
-                        state.failed_steps.append(task.id)
-                else:
-                    print("[ExecutionEngine] Verification failed. Invoking RepairEngine...")
-                    repair_tasks = self.repair_engine.repair(result, plan.goal, key=plan.plan_id)
-                    
-                    if repair_tasks:
-                        print(f"[ExecutionEngine] Injecting {len(repair_tasks)} repair tasks into the DAG.")
-                        self.state_manager.set_execution_state(ExecutionState.REPAIRING.value)
-                        # Insert repair nodes as dependencies of the verification task
-                        for rep in repair_tasks:
-                            rep.id = f"repair_{len(plan.tasks)}_{rep.type.value}"
-                            plan.tasks.append(rep)
-                            
-                            # Log planning/generation of repair
-                            self.execution_memory.log_repair(
-                                episode_id=plan.plan_id,
-                                repair_type=rep.type.value,
-                                target=rep.target_symbol,
-                                description=rep.description,
-                                success=True
-                            )
-                            
-                        # Make this verification task depend on the new repair tasks
-                        task.dependencies = list(set(task.dependencies + [rep.id for rep in repair_tasks]))
-                        # Re-queue the verification task so it runs again after repairs
-                        task.status = TaskStatus.PENDING
-                        task.retries = 0
-                    else:
-                        print("[ExecutionEngine] No repair tasks generated. Marking task as FAILED.")
-                        plan.mark_failed(task.id)
+            else:
+                print(f"[ExecutionEngine] Task {task.id} FAILED: {error_msg}")
+                
+                self.execution_memory.log_event(plan.plan_id, "TASK_COMPLETED", {
+                    "task_id": task.id,
+                    "status": "FAILED",
+                    "success": False,
+                    "error": error_msg
+                })
+                
+                # If it's a verification task failure, invoke repair planner
+                if isinstance(result, VerificationResult) and not result.success:
+                    # Log failures to failure record
+                    for diag in result.diagnostics:
+                        self.execution_memory.log_failure(
+                            episode_id=plan.plan_id,
+                            failure_type=diag.type,
+                            file_path=diag.file_path,
+                            line=diag.line,
+                            symbol=diag.symbol,
+                            message=diag.message
+                        )
+                        
+                    # Enforce retry budget using RepairEngine
+                    if not self.repair_engine.check_budget(plan):
+                        print(f"[ExecutionEngine] Repair budget exhausted ({self.repair_engine.get_attempts(plan.plan_id)} attempts). Failing task {task.id}.")
+                        scheduler.mark_failed(task.id)
                         state = self.state_manager.get_state()
                         if task.id not in state.failed_steps:
                             state.failed_steps.append(task.id)
-            else:
-                # Standard task retries
-                if task.retries < task.max_retries:
-                    task.retries += 1
-                    task.status = TaskStatus.PENDING
-                    print(f"[ExecutionEngine] Retrying task {task.id} (Attempt {task.retries}/{task.max_retries})")
+                    else:
+                        print("[ExecutionEngine] Verification failed. Invoking RepairEngine...")
+                        repair_tasks = self.repair_engine.repair(result, plan.goal, key=plan.plan_id)
+                        
+                        if repair_tasks:
+                            print(f"[ExecutionEngine] Injecting {len(repair_tasks)} repair tasks into the DAG.")
+                            self.state_manager.set_execution_state(ExecutionState.REPAIRING.value)
+                            
+                            # Insert repair nodes as dependencies of the verification task
+                            for rep in repair_tasks:
+                                # Inject to plan tasks list
+                                plan.tasks.append(rep)
+                                
+                                # Log planning/generation of repair
+                                self.execution_memory.log_repair(
+                                    episode_id=plan.plan_id,
+                                    repair_type=rep.type.value,
+                                    target=rep.target_symbol,
+                                    description=rep.description,
+                                    success=True
+                                )
+                                
+                            # Make this verification task depend on the new repair tasks
+                            task.dependencies = list(set(task.dependencies + [rep.id for rep in repair_tasks]))
+                            # Re-queue the verification task so it runs again after repairs
+                            task.status = TaskStatus.PENDING
+                            task.retries = 0
+                        else:
+                            print("[ExecutionEngine] No repair tasks generated. Marking task as FAILED.")
+                            scheduler.mark_failed(task.id)
+                            state = self.state_manager.get_state()
+                            if task.id not in state.failed_steps:
+                                state.failed_steps.append(task.id)
                 else:
-                    print(f"[ExecutionEngine] Max retries exceeded. Marking task {task.id} as FAILED.")
-                    plan.mark_failed(task.id)
-                    state = self.state_manager.get_state()
-                    if task.id not in state.failed_steps:
-                        state.failed_steps.append(task.id)
-                
+                    # Standard task retries
+                    if scheduler.can_retry(task.id):
+                        scheduler.increment_retries(task.id)
+                        print(f"[ExecutionEngine] Retrying task {task.id} (Attempt {task.retries}/{task.max_retries})")
+                    else:
+                        print(f"[ExecutionEngine] Max retries exceeded. Marking task {task.id} as FAILED.")
+                        scheduler.mark_failed(task.id)
+                        state = self.state_manager.get_state()
+                        if task.id not in state.failed_steps:
+                            state.failed_steps.append(task.id)
+                            
         self.state_manager.set_execution_plan(plan)
         self.state_manager.save_state()
         
@@ -208,57 +242,21 @@ class ExecutionEngine:
             outcome = "SUCCESS" if plan.is_successful() else "FAILED"
             self.execution_memory.complete_episode(plan.plan_id, outcome)
             
-        return result
+        last_task_id = runnable_tasks[-1].id
+        return results[last_task_id][1] if last_task_id in results else None
 
-    def execute_task(self, task, plan) -> Any:
-        # Check if task matches a verification task
-        if task.type in (TaskType.VERIFY_BUILD, TaskType.RUN_TEST, TaskType.VERIFY_TESTS, TaskType.VERIFY_LINT):
-            # Resolve affected files
-            affected = [t.target_symbol for t in plan.tasks if t.type in (TaskType.MODIFY_SYMBOL, TaskType.CREATE_SYMBOL)]
-            affected_files = []
-            for a in affected:
-                if not a:
-                    continue
-                handles = self.verification_engine.resolver.resolve(a)
-                if handles:
-                    affected_files.extend(list(set(h.file_path for h in handles if h.file_path)))
-                else:
-                    affected_files.append(a)
+    def execute_task_via_worker(self, task, plan) -> Any:
+        worker = self.workers.get(task.type)
+        if worker:
+            return worker.execute(task, plan)
             
-            stages = []
-            if task.type == TaskType.VERIFY_BUILD:
-                stages = ["syntax", "build"]
-            elif task.type in (TaskType.RUN_TEST, TaskType.VERIFY_TESTS):
-                stages = ["syntax", "build", "tests"]
-            elif task.type == TaskType.VERIFY_LINT:
-                stages = ["lint"]
-            else:
-                stages = ["syntax", "build", "tests"]
-                
-            v_plan = VerificationPlan(
-                stages=stages,
-                test_filter=task.target_symbol if task.type in (TaskType.RUN_TEST, TaskType.VERIFY_TESTS) else None,
-                affected_files=list(set(affected_files))
-            )
-            return self.verification_engine.verify(v_plan)
-            
-        elif task.type in (TaskType.MODIFY_SYMBOL, TaskType.CREATE_SYMBOL, TaskType.DELETE_SYMBOL, TaskType.REPAIR_IMPORTS, TaskType.REPAIR_COMPILATION, TaskType.REPAIR_SYMBOL, TaskType.REPAIR_FAILURE):
-            args = {
-                "symbol": task.target_symbol,
-                "goal": task.description or plan.goal,
-                "path": task.payload.get("file_path"),
-                "operation": task.type.value
-            }
-            return self.executor.dispatch("modify_symbol", args)
-            
-        elif task.type == TaskType.COMMIT_TRANSACTION:
+        # Fallbacks for specific transaction or verify changes
+        if task.type == TaskType.COMMIT_TRANSACTION:
             return self.executor.dispatch("git_commit", {"message": f"Complete task DAG: {plan.goal}"})
-            
         elif task.type == TaskType.VERIFY_CHANGES:
             return self.executor.dispatch("git_diff", {})
             
-        else:
-            raise ValueError(f"Unsupported task type: {task.type}")
+        raise ValueError(f"Unsupported task type: {task.type}")
 
     def _run_legacy(self):
         pending = self.state_manager.get_pending_executions()
