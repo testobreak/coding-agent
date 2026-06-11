@@ -26,9 +26,8 @@ class ExecutionValidator:
         "apply_patch",
         "write_file",
         "generate_patch",
-        "generate_modification",
-        "modify_file",
         "modify_symbol",
+        "execute_edit_plan",
 
 
         # testing
@@ -258,13 +257,14 @@ class ExecutionValidator:
             )
 
         # =============================================
-        # generate_modification
+        # execute_edit_plan
         # =============================================
 
-        elif tool == "generate_modification":
+        elif tool == "execute_edit_plan":
 
             required = [
-                "path",
+                "operation",
+                "symbol",
                 "goal",
             ]
 
@@ -277,35 +277,6 @@ class ExecutionValidator:
                     raise RuntimeError(
                         f"Missing {key}"
                     )
-
-            self.validate_path(
-                args["path"]
-            )
-
-        # =============================================
-        # modify_file
-        # =============================================
-
-        elif tool == "modify_file":
-
-            required = [
-                "path",
-                "goal",
-            ]
-
-            for key in required:
-
-                value = args.get(key)
-
-                if value is None or value == "":
-
-                    raise RuntimeError(
-                        f"Missing {key}"
-                    )
-
-            self.validate_path(
-                args["path"]
-            )
 
         # =============================================
         # modify_symbol
@@ -363,6 +334,28 @@ class ExecutionValidator:
 
             raise RuntimeError(
                 "Patch too large"
+            )
+
+        # Validate patch structure (must be structured JSON, SEARCH/REPLACE, or unified diff)
+        cleaned = patch.strip()
+        is_json = False
+        if "{" in cleaned or "[" in cleaned:
+            try:
+                import json
+                import re
+                match = re.search(r"(\{.*\}|\[.*\])", cleaned, re.DOTALL)
+                if match:
+                    json.loads(match.group(1))
+                    is_json = True
+            except Exception:
+                pass
+
+        is_search_replace = "<<<<<<< SEARCH" in patch and "=======" in patch and ">>>>>>> REPLACE" in patch
+        is_diff = "@@ " in patch or "--- " in patch or "+++ " in patch
+
+        if not (is_json or is_search_replace or is_diff):
+            raise RuntimeError(
+                "Invalid patch format: missing unified diff markers, SEARCH/REPLACE block, or Structured Edit JSON DSL."
             )
 
     def validate_path(

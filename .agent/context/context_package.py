@@ -5,8 +5,10 @@
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
-from editing.symbol_handle import SymbolHandle
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from editing.symbol_handle import SymbolHandle
 
 class ContextRadius(Enum):
     DIRECT = 1
@@ -90,13 +92,13 @@ class Snippet:
 @dataclass
 class ContextPackage:
     goal: str
-    primary_symbol: Optional[SymbolHandle]
-    callers: List[SymbolHandle] = field(default_factory=list)
-    callees: List[SymbolHandle] = field(default_factory=list)
-    related_tests: List[SymbolHandle] = field(default_factory=list)
+    primary_symbol: Optional["SymbolHandle"]
+    callers: List["SymbolHandle"] = field(default_factory=list)
+    callees: List["SymbolHandle"] = field(default_factory=list)
+    related_tests: List["SymbolHandle"] = field(default_factory=list)
     imports: List[str] = field(default_factory=list)
-    dependencies: List[SymbolHandle] = field(default_factory=list)
-    affected_symbols: List[SymbolHandle] = field(default_factory=list)
+    dependencies: List["SymbolHandle"] = field(default_factory=list)
+    affected_symbols: List["SymbolHandle"] = field(default_factory=list)
     snippets: List[Snippet] = field(default_factory=list)
     risk_score: float = 0.0
     confidence: float = 1.0
@@ -208,6 +210,7 @@ class ContextPackage:
     def from_dict(cls, data: Dict[str, Any]) -> "ContextPackage":
         if not data:
             return None
+        from editing.symbol_handle import SymbolHandle
         return cls(
             goal=data.get("goal", ""),
             primary_symbol=SymbolHandle.from_dict(data.get("primary_symbol")),
@@ -229,13 +232,13 @@ class ContextPackage:
 
 @dataclass
 class SymbolContextPackage:
-    target_symbol: Optional[SymbolHandle] = None
-    callers: List[SymbolHandle] = field(default_factory=list)
-    callees: List[SymbolHandle] = field(default_factory=list)
-    tests: List[SymbolHandle] = field(default_factory=list)
-    interfaces: List[SymbolHandle] = field(default_factory=list)
-    implementations: List[SymbolHandle] = field(default_factory=list)
-    related_symbols: List[SymbolHandle] = field(default_factory=list)
+    target_symbol: Optional["SymbolHandle"] = None
+    callers: List["SymbolHandle"] = field(default_factory=list)
+    callees: List["SymbolHandle"] = field(default_factory=list)
+    tests: List["SymbolHandle"] = field(default_factory=list)
+    interfaces: List["SymbolHandle"] = field(default_factory=list)
+    implementations: List["SymbolHandle"] = field(default_factory=list)
+    related_symbols: List["SymbolHandle"] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -252,6 +255,7 @@ class SymbolContextPackage:
     def from_dict(cls, data: Dict[str, Any]) -> "SymbolContextPackage":
         if not data:
             return cls()
+        from editing.symbol_handle import SymbolHandle
         return cls(
             target_symbol=SymbolHandle.from_dict(data.get("target_symbol")),
             callers=[SymbolHandle.from_dict(c) for c in data.get("callers", [])],

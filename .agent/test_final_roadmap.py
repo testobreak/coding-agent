@@ -53,7 +53,8 @@ for f in [file_a, file_b]:
     if os.path.exists(f):
         os.remove(f)
 # Reset head to clean baseline
-subprocess.run(["git", "reset", "--hard", "HEAD~1"], cwd="..", check=False)
+subprocess.run(["git", "reset", "--hard", "HEAD"], cwd="..", check=False)
+subprocess.run(["git", "stash", "drop"], cwd="..", check=False)
 
 
 # ==============================================================================
@@ -74,7 +75,7 @@ try:
     assert False
 except Exception as e:
     print(f"SUCCESS: Validator successfully caught invalid patch format:\n  -> {e}")
-    assert "missing unified diff markers" in str(e)
+    assert "missing unified diff markers" in str(e) or "Invalid patch format" in str(e)
 
 
 # ==============================================================================
@@ -114,15 +115,24 @@ assert len(context["retrieved_chunks"]) > 0, "RAG ContextAssembler retrieval FAI
 retrieved_chunk_in_context = context["retrieved_chunks"][0]
 print(f"Compressed chunk in assembled context: {retrieved_chunk_in_context['file']}")
 
-# Run build_prompt from ModificationEngine directly using this context
-prompt = executor.modifier.build_prompt(
-    goal="Add new endpoint",
-    file_path="MyController.java",
-    original_content="public class MyController {}",
-    retrieved_context=context["retrieved_chunks"],
-    execution_context="Execution prompt text",
-    architecture_notes=[]
+# Run build_prompt from PatchGenerator directly using this context
+from editing.ast_locator import ASTNodeInfo
+symbol_info = ASTNodeInfo(
+    node_type="class",
+    name="MyController",
+    start_line=1,
+    end_line=1,
+    start_byte=0,
+    end_byte=29,
+    content="public class MyController {}"
 )
+system_prompt, user_prompt = executor.patch_generator.build_prompt(
+    symbol_info=symbol_info,
+    instruction="Add new endpoint",
+    file_path="MyController.java",
+    execution_context=f"Execution prompt text\n{context['retrieved_chunks']}"
+)
+prompt = user_prompt
 
 print(f"\nVerification prompt text preview:\n{prompt[:350]}...")
 assert "mock_service.java" in prompt, "RAG Prompt Chaining FAILED! Retrieved context did not reach prompt!"

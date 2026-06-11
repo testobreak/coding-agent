@@ -41,8 +41,8 @@ from reflection.critic import (
 from reflection.replanner import (
     Replanner
 )
-from llm.modification_engine import (
-    ModificationEngine
+from llm.ollama_client import (
+    OllamaClient
 )
 from retrieval.retriever import (
     CodeRetriever
@@ -232,9 +232,10 @@ class Executor:
             PatchGenerator()
         )
 
-        self.modifier = (
-            ModificationEngine()
+        self.llm = (
+            OllamaClient()
         )
+        self.edit_executor = None
 
         self.tests = TestRunner(
             file_manager.root
@@ -292,6 +293,20 @@ class Executor:
             )
 
         started = time.time()
+
+        if not hasattr(self, "edit_executor") or self.edit_executor is None:
+            from editing.edit_executor import EditExecutor
+            self.edit_executor = EditExecutor(
+                file_manager=self.file_manager,
+                state_manager=self.state_manager,
+                git_manager=self.git,
+                validator=self.validator,
+                compile_validator=self.compile_validator,
+                test_runner=self.tests,
+                impact_analyzer=self.impact_analyzer,
+                retrieval_pipeline=self.retrieval_pipeline,
+                llm=self.llm,
+            )
 
         tool = execution.get(
             "tool"
@@ -615,90 +630,38 @@ class Executor:
                 raise
 
         elif tool == "modify_file":
-            raise RuntimeError("modify_file is disabled; all edits must be symbol-centric using modify_symbol.")
+            raise RuntimeError(
+                "modify_file is permanently disabled. "
+                "All edits must go through EditExecutor.execute(edit_plan). "
+                "Use the 'execute_edit_plan' or 'modify_symbol' tool instead."
+            )
 
         elif tool == "modify_symbol":
-            from editing.symbol_editor import SymbolEditor
-            editor = SymbolEditor(
-                file_manager=self.file_manager,
-                state_manager=self.state_manager,
-                git_manager=self.git,
-                validator=self.validator,
-                compile_validator=self.compile_validator,
-                test_runner=self.tests,
-                impact_analyzer=self.impact_analyzer,
-                retrieval_pipeline=self.retrieval_pipeline,
-                llm=self.modifier.llm
-            )
-            return editor.modify(
-                symbol_name=args["symbol"],
-                instruction=args["goal"],
+            from editing.models import EditOperation, EditPlan
+            op_raw = args.get("operation", "replace_method_body")
+            try:
+                operation = EditOperation(op_raw)
+            except ValueError:
+                operation = EditOperation.REPLACE_METHOD_BODY
+            plan = EditPlan(
+                operation=operation,
+                symbol=args["symbol"],
+                goal=args["goal"],
                 file_path=args.get("path"),
-                operation=args.get("operation", "modify_symbol")
             )
+            return self.edit_executor.execute(plan)
+
+        elif tool == "execute_edit_plan":
+            from editing.models import EditPlan
+            plan = EditPlan.from_dict(args)
+            return self.edit_executor.execute(plan)
 
         elif tool == "generate_modification":
-
-            original = (
-                self.file_manager.read_file(
-                    path=args["path"]
-                )
+            raise RuntimeError(
+                "generate_modification is permanently disabled. "
+                "All edits must go through EditExecutor.execute(edit_plan). "
+                "Use the 'execute_edit_plan' or 'modify_symbol' tool instead."
             )
-
-            if original is None:
-
-                raise RuntimeError(
-                    f"Unable to read file: "
-                    f"{args['path']}"
-                )
-
-            state = self.state_manager.get_state()
-
-            context = (
-                self.context_assembler.build(
-                    state
-                )
-            )
-
-            execution_context = (
-                self.prompt_builder
-                .build_execution_prompt(
-                    context
-                )
-            )
-
-            modified = (
-                self.modifier.modify_file(
-                    goal=args["goal"],
-                    file_path=args["path"],
-                    original_content=original,
-                    execution_context=execution_context,
-                    architecture_notes=getattr(
-                        state,
-                        "architecture_notes",
-                        []
-                    )
-                )
-            )
-
-            if not modified:
-
-                raise RuntimeError(
-                    "Modification engine returned empty content"
-                )
-
-            result = {
-                "success": True,
-                "path": args["path"],
-                "original": original,
-                "modified": modified
-            }
-
-            self.state_manager.set_last_modification(
-                result
-            )
-
-            return result
 
         elif tool == "generate_patch":
 
@@ -916,3 +879,12 @@ class Executor:
         raise RuntimeError(
             f"Unknown tool: {tool}"
         )
+
+    @property
+    def modifier(self):
+        # Compatibility bridge for legacy tests and graph runtime referencing executor.modifier.llm
+        class ModifierCompatBridge:
+            def __init__(self, llm):
+                self.llm = llm
+        return ModifierCompatBridge(self.llm)
+
