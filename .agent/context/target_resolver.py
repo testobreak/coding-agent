@@ -62,6 +62,7 @@ class TargetResolver:
                         Symbol.qualified_name.endswith("." + cand)
                     )
                 ).all()
+                conf = 0.95
 
                 # Dotted target split lookup (e.g., EmployeeService.saveEmployee)
                 if not db_symbols and "." in cand:
@@ -72,6 +73,7 @@ class TargetResolver:
                         Symbol.name == method_part,
                         Symbol.qualified_name.contains(class_part)
                     ).all()
+                    conf = 0.85
 
                 # Fuzzy lookup as fallback for this candidate
                 if not db_symbols:
@@ -81,6 +83,7 @@ class TargetResolver:
                             Symbol.qualified_name.like(f"%{cand}%")
                         )
                     ).limit(5).all()
+                    conf = 0.50
 
                 for sym in db_symbols:
                     if sym.id not in seen_ids:
@@ -91,7 +94,8 @@ class TargetResolver:
                             kind=sym.symbol_type or "unknown",
                             file_path=sym.file.path if sym.file else "",
                             start_line=sym.start_line if sym.start_line is not None else 1,
-                            end_line=sym.end_line if sym.end_line is not None else 1
+                            end_line=sym.end_line if sym.end_line is not None else 1,
+                            confidence=0.95 if conf == 0.95 else 0.85
                         ))
 
             # 4. Final fallback if absolutely nothing was found, but we have candidate strings
@@ -106,7 +110,8 @@ class TargetResolver:
                             kind="class",
                             file_path=f.path,
                             start_line=1,
-                            end_line=100
+                            end_line=100,
+                            confidence=0.45
                         ))
                         break
                     if handles:
@@ -121,10 +126,32 @@ class TargetResolver:
                     kind="fallback",
                     file_path="",
                     start_line=1,
-                    end_line=1
+                    end_line=1,
+                    confidence=0.20
                 ))
 
+            # Check if PATCH mode abort condition is triggered
+            from core.execution_mode import ExecutionMode
+            from runtime.fast_path_router import FastPathRouter
+            exec_mode = ExecutionMode.PATCH
+            try:
+                route_decision = FastPathRouter.route(goal)
+                exec_mode = route_decision.execution_mode
+            except Exception:
+                pass
+
+            if exec_mode == ExecutionMode.PATCH:
+                valid_handles = [h for h in handles if h.confidence >= 0.8]
+                if not valid_handles:
+                    from editing.symbol_resolver import SymbolResolutionError
+                    max_conf = max([h.confidence for h in handles]) if handles else 0.0
+                    raise SymbolResolutionError(
+                        f"TargetResolver: Target confidence {max_conf} is below required threshold 0.8 for PATCH mode (Goal: '{goal}'). Aborting target resolution."
+                    )
+
         except Exception as e:
+            if "SymbolResolutionError" in str(type(e)):
+                raise
             print(f"[TargetResolver] Warning: Failed target resolution: {e}")
         finally:
             if close_session:

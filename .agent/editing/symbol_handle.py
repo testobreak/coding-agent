@@ -13,6 +13,7 @@ class SymbolHandle:
     file_path: str
     start_line: int
     end_line: int
+    confidence: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -21,7 +22,8 @@ class SymbolHandle:
             "kind": self.kind,
             "file_path": self.file_path,
             "start_line": self.start_line,
-            "end_line": self.end_line
+            "end_line": self.end_line,
+            "confidence": self.confidence
         }
 
     @classmethod
@@ -34,6 +36,7 @@ class SymbolHandle:
             kind=data.get("kind", "unknown"),
             file_path=data.get("file_path", ""),
             start_line=data.get("start_line", 1),
-            end_line=data.get("end_line", 1)
+            end_line=data.get("end_line", 1),
+            confidence=data.get("confidence", 1.0)
         )
 

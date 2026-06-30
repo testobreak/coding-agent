@@ -18,6 +18,7 @@
 import subprocess
 from pathlib import Path
 from typing import Optional
+from core.validation_mode import ValidationState
 
 
 class CompileValidator:
@@ -34,83 +35,88 @@ class CompileValidator:
     # MAIN ENTRY
     # =========================================================
 
-    def validate(self, file_path: str) -> None:
+    def validate(self, file_path: str) -> ValidationState:
         """
         Run compile check for the given file.
-        Raises RuntimeError if compile fails, returns None on success.
+        Returns ValidationState.
         """
+        from core.validation_mode import ValidationState
         path = Path(file_path)
         suffix = path.suffix.lower()
 
         if suffix == ".py":
-            self._compile_python(path)
+            return self._compile_python(path)
 
         elif suffix == ".java":
-            self._compile_java(path)
+            return self._compile_java(path)
 
         elif suffix in {".ts", ".tsx"}:
-            self._compile_typescript(path)
+            return self._compile_typescript(path)
 
         elif suffix in {".js", ".jsx"}:
-            self._compile_javascript(path)
+            return self._compile_javascript(path)
 
-        # Other file types (JSON, YAML, CSS…) — no compile step needed
+        return ValidationState.SKIPPED
 
     # =========================================================
     # PYTHON
     # =========================================================
 
-    def _compile_python(self, path: Path) -> None:
-        result = subprocess.run(
-            ["python", "-m", "py_compile", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"[CompileValidator] Python compile failed for {path.name}:\n"
-                f"{result.stderr.strip()}"
+    def _compile_python(self, path: Path) -> ValidationState:
+        from core.validation_mode import ValidationState
+        import sys
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "py_compile", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
+        except FileNotFoundError:
+            return ValidationState.UNAVAILABLE
+
+        if result.returncode != 0:
+            return ValidationState.FAILED
         print(f"[CompileValidator] ✓ Python compile OK: {path.name}")
+        return ValidationState.PASSED
 
     # =========================================================
     # JAVA (Maven)
     # =========================================================
 
-    def _compile_java(self, path: Path) -> None:
+    def _compile_java(self, path: Path) -> ValidationState:
+        from core.validation_mode import ValidationState
         backend_root = self._find_project_root("pom.xml")
         if backend_root is None:
             print(
                 f"[CompileValidator] No pom.xml found — "
                 f"skipping Java compile check for {path.name}"
             )
-            return
+            return ValidationState.SKIPPED
 
-        result = subprocess.run(
-            ["mvn", "-q", "-DskipTests", "compile", "--no-transfer-progress"],
-            cwd=backend_root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        try:
+            result = subprocess.run(
+                ["mvn", "-q", "-DskipTests", "compile", "--no-transfer-progress"],
+                cwd=backend_root,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError:
+            print(f"[CompileValidator] mvn command not found on PATH — Java compile check unavailable")
+            return ValidationState.UNAVAILABLE
 
         if result.returncode != 0:
-            # Extract the most relevant error lines from Maven output
-            error_lines = self._extract_maven_errors(
-                result.stdout + result.stderr
-            )
-            raise RuntimeError(
-                f"[CompileValidator] Java compile failed after modifying {path.name}:\n"
-                f"{error_lines}"
-            )
+            return ValidationState.FAILED
         print(f"[CompileValidator] ✓ Java compile OK: {path.name}")
+        return ValidationState.PASSED
 
     # =========================================================
     # TYPESCRIPT
     # =========================================================
 
-    def _compile_typescript(self, path: Path) -> None:
+    def _compile_typescript(self, path: Path) -> ValidationState:
+        from core.validation_mode import ValidationState
         frontend_root = self._find_project_root("tsconfig.json")
         if frontend_root is None:
             frontend_root = self._find_project_root("package.json")
@@ -119,45 +125,45 @@ class CompileValidator:
                 f"[CompileValidator] No tsconfig.json found — "
                 f"skipping TypeScript compile check for {path.name}"
             )
-            return
+            return ValidationState.SKIPPED
 
-        result = subprocess.run(
-            ["npx", "tsc", "--noEmit", "--pretty", "false"],
-            cwd=frontend_root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        try:
+            result = subprocess.run(
+                ["npx", "tsc", "--noEmit", "--pretty", "false"],
+                cwd=frontend_root,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError:
+            print(f"[CompileValidator] npx command not found on PATH — TypeScript compile check unavailable")
+            return ValidationState.UNAVAILABLE
 
         if result.returncode != 0:
-            # Filter output to lines mentioning this specific file
-            relevant = self._filter_ts_errors(
-                result.stdout + result.stderr,
-                path.name,
-            )
-            raise RuntimeError(
-                f"[CompileValidator] TypeScript compile failed after modifying {path.name}:\n"
-                f"{relevant}"
-            )
+            return ValidationState.FAILED
         print(f"[CompileValidator] ✓ TypeScript compile OK: {path.name}")
+        return ValidationState.PASSED
 
     # =========================================================
     # JAVASCRIPT (syntax only via --check)
     # =========================================================
 
-    def _compile_javascript(self, path: Path) -> None:
-        result = subprocess.run(
-            ["node", "--check", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"[CompileValidator] JavaScript syntax check failed for {path.name}:\n"
-                f"{result.stderr.strip()}"
+    def _compile_javascript(self, path: Path) -> ValidationState:
+        from core.validation_mode import ValidationState
+        try:
+            result = subprocess.run(
+                ["node", "--check", str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
+        except FileNotFoundError:
+            return ValidationState.UNAVAILABLE
+
+        if result.returncode != 0:
+            return ValidationState.FAILED
         print(f"[CompileValidator] ✓ JavaScript syntax OK: {path.name}")
+        return ValidationState.PASSED
 
     # =========================================================
     # PROJECT ROOT DETECTION
