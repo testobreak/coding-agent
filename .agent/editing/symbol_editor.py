@@ -177,6 +177,23 @@ class SymbolEditor:
         )
         tx.begin()
         
+        # Capture pre-existing modifications/untracked files (before write)
+        import subprocess
+        import os
+        before_res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True
+        )
+        before_git_paths = set()
+        if before_res.returncode == 0:
+            for line in before_res.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    parts = line.split(None, 1)
+                    if len(parts) == 2:
+                        before_git_paths.add(os.path.normpath(parts[1]))
+
         success = False
         try:
             # 1. Apply patch content and write to disk
@@ -191,7 +208,8 @@ class SymbolEditor:
                 self.validator.validate_file_syntax(resolved_file_path)
             except Exception as e:
                 raise RuntimeError(f"Syntax validation failed: {e}")
-            self.state_manager.increment_validations()
+            if hasattr(self.state_manager, "increment_validations"):
+                self.state_manager.increment_validations()
             
             # 3. Compile validation
             print(f"[SymbolEditor] Validating compilation...")
@@ -223,6 +241,39 @@ class SymbolEditor:
                 failure_summary = "; ".join([f"{f.get('error_type')}: {f.get('message')}" for f in failures[:3]]) or "Backend test failure"
                 raise RuntimeError(f"Test suite validation failed: {failure_summary}")
                 
+            # Enforce Patch Isolation (Fix #6)
+            import subprocess
+            import os
+            status_res = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            modified_git_paths = []
+            for line in status_res.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    norm_path = os.path.normpath(parts[1])
+                    if norm_path not in before_git_paths:
+                        modified_git_paths.append(parts[1])
+
+            allowed = {os.path.normpath(patch.file_path)}
+            actual = {os.path.normpath(f) for f in modified_git_paths}
+            actual = {
+                f for f in actual
+                if not f.startswith(".agent") and not f.startswith("temp_") and not f.endswith(".pyc")
+            }
+
+            if not actual.issubset(allowed):
+                unallowed = actual - allowed
+                raise RuntimeError(
+                    f"Patch Isolation violation: Modified unallowed files: {unallowed}"
+                )
+
             # Commit changes on validation success
             tx.commit()
             success = True
@@ -248,7 +299,8 @@ class SymbolEditor:
                     "path": patch.file_path,
                     "content": patch.new_text
                 })
-            self.state_manager.increment_modifications()
+            if hasattr(self.state_manager, "increment_modifications"):
+                self.state_manager.increment_modifications()
             
         return success
 

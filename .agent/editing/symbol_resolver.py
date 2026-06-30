@@ -4,6 +4,9 @@
 
 import os
 from typing import List
+
+class SymbolResolutionError(Exception):
+    pass
 from context.symbol_resolver import SymbolResolver as ContextResolver
 from editing.symbol_handle import SymbolHandle
 
