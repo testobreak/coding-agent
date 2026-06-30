@@ -255,7 +255,15 @@ class ContextBuilder:
                                     repo_root = os.path.dirname(repo_root)
                                 full_path = os.path.abspath(os.path.join(repo_root, active_file_rel))
                                 
-                                node_info = locator.find_enclosing_node(full_path, line_num)
+                                source_content = None
+                                if hasattr(runtime_ctx, "unsaved_buffer") and runtime_ctx.unsaved_buffer:
+                                    source_content = runtime_ctx.unsaved_buffer
+                                else:
+                                    if os.path.exists(full_path):
+                                        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                                            source_content = f.read()
+
+                                node_info = locator.find_enclosing_node(full_path, line_num, source=source_content)
                                 if node_info:
                                     cursor_symbol = SymbolHandle(
                                         symbol_id=f"sym_cursor_{node_info.name}",
