@@ -47,8 +47,8 @@ class ASTLocator:
 
     def find_symbol(self, file_path: str, symbol_name: str, source: str = None) -> ASTNodeInfo | None:
         if source is None:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                source = f.read()
+            from ide.virtual_workspace import VirtualWorkspace
+            source = VirtualWorkspace.get_instance().read_file(file_path)
                 
         lang_str = self.get_language(file_path)
         lang = self.langs.get(lang_str)
@@ -156,3 +156,87 @@ class ASTLocator:
                     content=line
                 )
         return None
+
+    def _find_enclosing_symbol_node(self, node):
+        curr = node
+        symbol_types = {
+            "function_definition", "method_definition", "class_definition",
+            "class_declaration", "interface_declaration", "enum_declaration",
+            "function_declaration", "constructor_declaration", "method_declaration",
+            "arrow_function", "variable_declarator"
+        }
+        while curr:
+            if curr.type in symbol_types:
+                return curr
+            curr = curr.parent
+        return None
+
+    def _get_enclosing_symbol_fqn(self, node, src: bytes) -> str:
+        parts = []
+        curr = node
+        symbol_types = {
+            "function_definition", "method_definition", "class_definition",
+            "class_declaration", "interface_declaration", "enum_declaration",
+            "function_declaration", "constructor_declaration", "method_declaration",
+            "arrow_function", "variable_declarator"
+        }
+        while curr:
+            if curr.type in symbol_types:
+                name = self._get_node_name(curr, src)
+                if name:
+                    parts.insert(0, name)
+            curr = curr.parent
+        return ".".join(parts)
+
+    def find_enclosing_node(self, file_path: str, line_number: int, source: str = None) -> ASTNodeInfo | None:
+        """Find the smallest enclosing AST node covering the specified line number (1-indexed)."""
+        if source is None:
+            from ide.virtual_workspace import VirtualWorkspace
+            source = VirtualWorkspace.get_instance().read_file(file_path)
+                 
+        lang_str = self.get_language(file_path)
+        lang = self.langs.get(lang_str)
+        if not lang:
+            return None
+ 
+        parser = Parser(lang)
+        src_bytes = source.encode("utf-8")
+        tree = parser.parse(src_bytes)
+        
+        target_line_0 = line_number - 1
+        
+        enclosing_node = self._find_smallest_enclosing(tree.root_node, target_line_0)
+        if enclosing_node:
+            symbol_node = self._find_enclosing_symbol_node(enclosing_node)
+            if symbol_node:
+                enclosing_node = symbol_node
+            
+            start_line = enclosing_node.start_point[0] + 1
+            end_line = enclosing_node.end_point[0] + 1
+            content = src_bytes[enclosing_node.start_byte:enclosing_node.end_byte].decode("utf-8", errors="replace")
+            fqn = self._get_enclosing_symbol_fqn(enclosing_node, src_bytes) or enclosing_node.type
+            return ASTNodeInfo(
+                node_type=enclosing_node.type,
+                name=fqn,
+                start_line=start_line,
+                end_line=end_line,
+                start_byte=enclosing_node.start_byte,
+                end_byte=enclosing_node.end_byte,
+                content=content
+            )
+        return None
+ 
+    def _find_smallest_enclosing(self, node, line: int):
+        start_line = node.start_point[0]
+        end_line = node.end_point[0]
+        if not (start_line <= line <= end_line):
+            return None
+             
+        for child in node.children:
+            res = self._find_smallest_enclosing(child, line)
+            if res:
+                # If child is a primitive/leaf type like identifiers or operators, return the parent statement instead
+                if res.type in ("identifier", "number", "string", "comment", "keyword") and node.type not in ("program", "translation_unit"):
+                    return node
+                return res
+        return node

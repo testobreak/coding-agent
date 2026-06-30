@@ -22,7 +22,9 @@ IGNORE_DIRS = {
 
     ".mypy_cache",
 
-    ".cache"
+    ".cache",
+
+    ".agent"
 }
 
 SUPPORTED_EXTENSIONS = {

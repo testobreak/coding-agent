@@ -52,9 +52,66 @@ class GenericChunker:
         # 2. Extract Docstrings / Block Comments
         docstrings = self.extract_block_comments(source)
 
-        # 3. Slide over file lines to build chunks
+        # 3. Query DB symbols for symbol-based chunking
+        db_symbols = []
+        try:
+            from repository_intelligence.db.connection import SessionLocal
+            from repository_intelligence.models.symbol import Symbol
+            from repository_intelligence.models.file import File
+            import os
+
+            rel_path = str(path)
+            repo_root = os.getcwd()
+            if os.path.basename(repo_root) == ".agent":
+                repo_root = os.path.dirname(repo_root)
+            try:
+                rel_path = os.path.relpath(path, repo_root)
+            except Exception:
+                pass
+
+            db_session = SessionLocal()
+            try:
+                db_file = db_session.query(File).filter(File.path == rel_path).first()
+                if db_file:
+                    db_symbols = db_session.query(Symbol).filter(Symbol.file_id == db_file.id).all()
+                    db_symbols.sort(key=lambda s: s.start_line or 0)
+            finally:
+                db_session.close()
+        except Exception as ex:
+            print(f"[Generic Chunker] Database symbol scan skipped: {ex}")
+
+        # If DB symbols exist, chunk exactly by symbol boundaries (symbol-based chunking)
+        if db_symbols:
+            chunks = []
+            for idx, symbol in enumerate(db_symbols):
+                start = symbol.start_line or 1
+                end = symbol.end_line or total_lines
+                
+                # Fetch code block for the symbol
+                chunk_lines = lines[start - 1:end]
+                chunk_code = "\n".join(chunk_lines)
+                docstring = self.find_relevant_docstring(start, end, docstrings)
+
+                chunk_id = f"{path}:{symbol.name}:{start}"
+                metadata = {
+                    "chunk_id": chunk_id,
+                    "name": symbol.name,
+                    "type": symbol.symbol_type or "ClassDef",
+                    "file": str(path),
+                    "start_line": start,
+                    "end_line": end,
+                    "parent": None,
+                    "docstring": docstring,
+                    "imports": imports,
+                    "chunk_index": idx,
+                    "total_chunks": len(db_symbols),
+                    "code": chunk_code
+                }
+                chunks.append(metadata)
+            return chunks
+
+        # Fallback: Slide over file lines to build chunks (file-based sliding window)
         chunks = []
-        total_lines = len(lines)
         start = 0
         chunk_idx = 0
 

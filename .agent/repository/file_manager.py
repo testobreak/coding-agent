@@ -80,16 +80,27 @@ class FileManager:
             path
         )
 
-        if not target.exists():
+        # Try reading from VirtualWorkspace overlay filesystem
+        content = None
+        try:
+            from ide.virtual_workspace import VirtualWorkspace
+            workspace = VirtualWorkspace.get_instance()
+            abs_str = str(target.resolve())
+            if workspace.exists(abs_str):
+                content = workspace.read_file(abs_str)
+        except Exception:
+            pass
 
-            raise FileNotFoundError(
-                path
+        if content is None:
+            if not target.exists():
+                raise FileNotFoundError(
+                    path
+                )
+
+            content = target.read_text(
+                encoding="utf-8",
+                errors="ignore"
             )
-
-        content = target.read_text(
-            encoding="utf-8",
-            errors="ignore"
-        )
 
         lines = content.splitlines()
 

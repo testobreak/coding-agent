@@ -21,7 +21,13 @@ MODIFICATION_PLANNING = (
     "modification_planning"
 )
 
-MODIFY = "modify"
+REPLACE_SPAN = "replace_span"
+
+INSERT_AFTER = "insert_after"
+
+INSERT_BEFORE = "insert_before"
+
+DELETE_SPAN = "delete_span"
 
 PATCH = "patch"
 

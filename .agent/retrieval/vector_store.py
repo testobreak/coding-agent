@@ -1,123 +1,36 @@
 # retrieval/vector_store.py
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any
 
-import faiss
-import numpy as np
+class VectorStore(ABC):
 
-
-class VectorStore:
-
-    def __init__(
+    @abstractmethod
+    def add_embeddings(
         self,
-        dimension: int
+        chunk_ids: List[str],
+        vectors: List[List[float]],
+        chunks: List[Dict[str, Any]]
     ):
+        pass
 
-        self.dimension = dimension
-
-        self.index = faiss.IndexFlatIP(
-            dimension
-        )
-
-        self.chunks = []
-
-    # =====================================================
-    # NORMALIZATION
-    # =====================================================
-
-    def normalize(
-        self,
-        vector
-    ):
-
-        norm = np.linalg.norm(vector)
-
-        if norm == 0:
-            return vector
-
-        return vector / norm
-
-    # =====================================================
-    # ADD
-    # =====================================================
-
-    def add(
-        self,
-        embedding,
-        chunk
-    ):
-
-        embedding = self.normalize(
-            embedding
-        )
-
-        embedding = np.array(
-            [embedding],
-            dtype=np.float32
-        )
-
-        self.index.add(embedding)
-
-        self.chunks.append(chunk)
-
-    # =====================================================
-    # SEARCH
-    # =====================================================
-
+    @abstractmethod
     def search(
         self,
-        query_embedding,
-        top_k=10,
-        min_score=0.20
+        query_vector: List[float],
+        k: int = 50
+    ) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    def save(
+        self,
+        file_path: str
     ):
+        pass
 
-        if self.index.ntotal == 0:
-            return []
-
-        query_embedding = self.normalize(
-            query_embedding
-        )
-
-        query_embedding = np.array(
-            [query_embedding],
-            dtype=np.float32
-        )
-
-        top_k = min(
-            top_k,
-            self.index.ntotal
-        )
-
-        scores, indices = self.index.search(
-            query_embedding,
-            top_k
-        )
-
-        results = []
-
-        for score, idx in zip(
-            scores[0],
-            indices[0]
-        ):
-
-            if idx == -1:
-                continue
-
-            if score < min_score:
-                continue
-
-            results.append({
-
-                "score": float(score),
-
-                "chunk":
-                    self.chunks[idx]
-            })
-
-        return results
-
-    # =====================================================
-    # INFO
-    # =====================================================
-
-    def total_vectors(self):
-
-        return self.index.ntotal
+    @abstractmethod
+    def load(
+        self,
+        file_path: str
+    ):
+        pass

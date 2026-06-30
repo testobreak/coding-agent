@@ -236,3 +236,27 @@ class RepairPattern(Base):
     examples = Column(JSONB, nullable=False, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SymbolSpan(Base):
+    __tablename__ = "symbol_spans"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid()
+    )
+
+    file_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    symbol = Column(Text, nullable=False)
+    kind = Column(Text, nullable=False)
+    start_byte = Column(Integer, nullable=False)
+    end_byte = Column(Integer, nullable=False)
+    language = Column(Text, nullable=False)
+    qualified_signature = Column(Text)
+

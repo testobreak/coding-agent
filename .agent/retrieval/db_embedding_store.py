@@ -94,32 +94,34 @@ class DatabaseEmbeddingStore:
         top_k: int = 10,
         min_score: float = 0.20
     ) -> list[dict]:
+        if not persisted:
+            return []
 
+        from retrieval.faiss_store import FaissVectorStore
+
+        # Build/update the HNSW index cache if size has changed
+        if not hasattr(self, "_hnsw_store") or self._hnsw_store.index.ntotal != len(persisted):
+            dim = len(persisted[0].vector)
+            self._hnsw_store = FaissVectorStore(dim)
+
+            chunk_ids = [str(i) for i in range(len(persisted))]
+            vectors = [item.vector for item in persisted]
+            chunks = [item.chunk for item in persisted]
+
+            self._hnsw_store.add_embeddings(chunk_ids, vectors, chunks)
+
+        # Encode query
         query_vector = self.encode_query(query)
+
+        # Search the approximate nearest neighbor HNSW index in O(log N)
+        results = self._hnsw_store.search(query_vector, k=top_k)
+
         scored = []
+        for res in results:
+            if res["score"] >= min_score:
+                scored.append(res)
 
-        for item in persisted:
-            score = self._cosine(
-                query_vector,
-                item.vector
-            )
-
-            if score < min_score:
-                continue
-
-            scored.append(
-                {
-                    "score": score,
-                    "chunk": item.chunk
-                }
-            )
-
-        scored.sort(
-            key=lambda result: result["score"],
-            reverse=True
-        )
-
-        return scored[:top_k]
+        return scored
 
     def _chunk(
         self,

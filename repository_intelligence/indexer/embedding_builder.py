@@ -5,14 +5,48 @@ import re
 
 class EmbeddingBuilder:
 
-    model_name = "local-hash-v1"
-    dimensions = 64
+    model_name = "all-MiniLM-L6-v2"
+    dimensions = 384
+
+    def __init__(self):
+        self._model = None
+
+    @property
+    def model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            print("[EmbeddingBuilder] Lazy-loading SentenceTransformer('all-MiniLM-L6-v2')...")
+            self._model = SentenceTransformer("all-MiniLM-L6-v2")
+        return self._model
 
     def build(
         self,
         text: str
     ) -> list[float]:
+        try:
+            emb = self.model.encode(
+                text,
+                convert_to_numpy=True,
+                normalize_embeddings=True
+            )
+            return [float(x) for x in emb]
+        except Exception as e:
+            print(f"[EmbeddingBuilder] Error generating semantic embeddings: {e}. Falling back to token hashing.")
+            return self._fallback_build(text)
 
+    def content_hash(
+        self,
+        text: str
+    ) -> str:
+
+        return hashlib.sha256(
+            text.encode("utf-8")
+        ).hexdigest()
+
+    def _fallback_build(
+        self,
+        text: str
+    ) -> list[float]:
         vector = [0.0] * self.dimensions
 
         for token in self._tokens(text):
@@ -37,15 +71,6 @@ class EmbeddingBuilder:
             round(value / norm, 6)
             for value in vector
         ]
-
-    def content_hash(
-        self,
-        text: str
-    ) -> str:
-
-        return hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest()
 
     def _tokens(
         self,

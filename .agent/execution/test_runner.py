@@ -8,17 +8,14 @@
 
 import subprocess
 from pathlib import Path
-
 from execution.failure_parser import (
     MavenFailureParser,
     TypeScriptFailureParser,
 )
 
-
 class TestRunner:
-
     def __init__(self, root="."):
-        self.root = Path(root)
+        self.root = Path(root).resolve()
         self.maven_parser = MavenFailureParser()
         self.ts_parser = TypeScriptFailureParser()
 
@@ -26,44 +23,88 @@ class TestRunner:
     # BACKEND TESTS (Maven / Spring Boot)
     # =====================================================
 
-    def run_backend_tests(self, test_filter=None):
+    def run_backend_tests(self, test_filter=None, touched_files=None):
         """
-        Locate pom.xml (checking root and backend/ sub-directory),
-        run `mvn test -q`, parse structured failures.
+        Determine subprojects based on touched files, run appropriate test command,
+        and validate that tests actually executed (detecting fake zero-test runs).
         """
-        backend_root = self._find_project_root("pom.xml")
+        from execution.context_engine import ExecutionContextEngine, WorkspaceRoutingError
+        from repository_intelligence.workspace import WorkspaceType
+        from execution.validation_router import ValidationRouter
 
-        if backend_root is None:
-            # Fallback: original behaviour (pytest)
-            return self._run_command(["pytest"], self.root)
+        engine = ExecutionContextEngine(self.root)
+        
+        # Resolve workspaces from touched files
+        workspaces = []
+        if touched_files:
+            for f in touched_files:
+                try:
+                    ws = engine.resolve_workspace(f)
+                    if ws not in workspaces:
+                        workspaces.append(ws)
+                except WorkspaceRoutingError:
+                    pass
 
-        cmd = ["mvn", "test", "-q", "--no-transfer-progress"]
-        if test_filter:
-            cmd.append(f"-Dtest={test_filter}")
-            print(f"[TestRunner] Targeted test run: {test_filter}")
-        result = self._run_command(cmd, backend_root)
+        # Fallback to all detected workspaces if none matched
+        if not workspaces:
+            workspaces = engine.workspaces
 
-        # Parse Maven surefire output into structured failures
-        stdout = result.get("stdout", "") + result.get("stderr", "")
-        failures = self.maven_parser.parse(stdout, repo_root=str(self.root.parent))
+        # Default fallback to Python/pytest if no workspaces detected at all
+        if not workspaces:
+            workspaces = []
 
-        result["failures"] = [
-            {
-                "test_class": f.test_class,
-                "test_method": f.test_method,
-                "error_type": f.error_type,
-                "message": f.message,
-                "stack_frames": f.stack_frames,
-                "likely_source_files": f.likely_source_files,
-            }
-            for f in failures
-        ]
+        last_result = None
+        for ws in workspaces:
+            try:
+                cmd = list(engine.tool_router.build_command(ws, "test"))
+            except KeyError:
+                continue
 
-        # Ensure success reflects actual test outcome
-        if failures:
-            result["success"] = False
+            if test_filter and ws.type in (WorkspaceType.JAVA_MAVEN, WorkspaceType.JAVA_GRADLE):
+                cmd.append(f"-Dtest={test_filter}")
+                print(f"[TestRunner] Targeted test run: {test_filter}")
 
-        return result
+            result = self._run_command(cmd, ws.root)
+            last_result = result
+
+            output = result.get("stdout", "") + result.get("stderr", "")
+            is_valid, reason = ValidationRouter.parse_fake_validation(output, ws.type)
+
+            if not is_valid:
+                print(f"[TestRunner] Warning: {reason}")
+                result["success"] = False
+                result["error"] = reason
+                result["failures"] = [{
+                    "test_class": "OrchestrationGuard",
+                    "test_method": "TestExecution",
+                    "error_type": "ZERO_TESTS",
+                    "message": reason,
+                    "stack_frames": [],
+                    "likely_source_files": []
+                }]
+                return result
+
+            if ws.type in (WorkspaceType.JAVA_MAVEN, WorkspaceType.JAVA_GRADLE):
+                failures = self.maven_parser.parse(output, repo_root=str(self.root.parent))
+                result["failures"] = [
+                    {
+                        "test_class": f.test_class,
+                        "test_method": f.test_method,
+                        "error_type": f.error_type,
+                        "message": f.message,
+                        "stack_frames": f.stack_frames,
+                        "likely_source_files": f.likely_source_files,
+                    }
+                    for f in failures
+                ]
+                if failures:
+                    result["success"] = False
+
+        return last_result or {
+            "success": False,
+            "error": "No projects resolved to validate",
+            "failures": []
+        }
 
     # =====================================================
     # FRONTEND BUILD (Vite / TypeScript)
@@ -71,22 +112,22 @@ class TestRunner:
 
     def run_frontend_build(self):
         """
-        Locate package.json (checking root and frontend/ sub-directory),
-        run `npm run build`, parse TypeScript errors.
+        Locate package.json and run the build command inside its resolved workspace.
         """
-        frontend_root = self._find_project_root("package.json")
-
-        if frontend_root is None:
+        from execution.context_engine import ExecutionContextEngine
+        from repository_intelligence.workspace import WorkspaceType
+        engine = ExecutionContextEngine(self.root)
+        
+        node_ws = next((w for w in engine.workspaces if w.type == WorkspaceType.NODE), None)
+        if not node_ws:
             return {
                 "success": False,
-                "error": "package.json not found",
+                "error": "Node workspace not found",
                 "failures": [],
             }
 
-        result = self._run_command(
-            ["npm", "run", "build"],
-            frontend_root,
-        )
+        cmd = engine.tool_router.build_command(node_ws, "build")
+        result = self._run_command(cmd, node_ws.root)
 
         stdout = result.get("stdout", "") + result.get("stderr", "")
         failures = self.ts_parser.parse(stdout, repo_root=str(self.root.parent))
@@ -111,19 +152,20 @@ class TestRunner:
     # =====================================================
 
     def run_frontend_tests(self):
-        frontend_root = self._find_project_root("package.json")
-
-        if frontend_root is None:
+        from execution.context_engine import ExecutionContextEngine
+        from repository_intelligence.workspace import WorkspaceType
+        engine = ExecutionContextEngine(self.root)
+        
+        node_ws = next((w for w in engine.workspaces if w.type == WorkspaceType.NODE), None)
+        if not node_ws:
             return {
                 "success": False,
-                "error": "package.json not found",
+                "error": "Node workspace not found",
                 "failures": [],
             }
 
-        result = self._run_command(
-            ["npm", "test", "--", "--run"],
-            frontend_root,
-        )
+        cmd = engine.tool_router.build_command(node_ws, "test")
+        result = self._run_command(cmd, node_ws.root)
 
         stdout = result.get("stdout", "") + result.get("stderr", "")
         failures = self.ts_parser.parse(stdout, repo_root=str(self.root.parent))
@@ -139,29 +181,6 @@ class TestRunner:
         ]
 
         return result
-
-    # =====================================================
-    # PROJECT ROOT DETECTION
-    # =====================================================
-
-    def _find_project_root(self, marker_file: str) -> "Path | None":
-        """
-        Look for `marker_file` in self.root and immediate sub-directories.
-        Returns the directory that contains it, or None.
-        """
-        # Check root itself
-        if (self.root / marker_file).exists():
-            return self.root
-
-        # Check one level of sub-directories (backend/, frontend/, etc.)
-        try:
-            for child in self.root.iterdir():
-                if child.is_dir() and (child / marker_file).exists():
-                    return child
-        except Exception:
-            pass
-
-        return None
 
     # =====================================================
     # COMMAND RUNNER
@@ -205,8 +224,7 @@ class TestRunner:
             }
 
         except FileNotFoundError:
-            # Safe fallback if cmd[0] is not found
-            # e.g. if pytest or mvn is not on the PATH
+            # Safe fallback if cmd[0] is not found (e.g. pytest or mvn not on path)
             if command and command[0] == "pytest":
                 try:
                     import sys

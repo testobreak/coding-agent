@@ -18,19 +18,56 @@ class Planner:
         Uses Ollama to generate a structured JSON intent plan, with a rule-based fallback.
         """
         target_file = None
-        if context.target_symbols:
-            target_file = context.target_symbols[0].file_path
-        elif context.related_files:
-            target_file = context.related_files[0]
+        resolved_files = []
+        resolved_symbols = []
+        
+        # Integrate deterministic TargetResolver prior to planning
+        try:
+            from planning.target_resolver import TargetResolver
+            from repository_intelligence.db.connection import SessionLocal
+            db_session = SessionLocal()
+            try:
+                resolver = TargetResolver(db_session)
+                resolution = resolver.resolve(context.goal)
+                if resolution.files:
+                    resolved_files = resolution.files
+                    resolved_symbols = resolution.symbols
+                    target_file = resolution.files[0]
+                    print(f"[Planner] TargetResolver resolved targets: {resolved_files} (confidence: {resolution.confidence})")
+            finally:
+                db_session.close()
+        except Exception as tr_err:
+            print(f"[Planner] TargetResolver failed: {tr_err}")
+
+        if not target_file:
+            if context.target_symbols:
+                target_file = context.target_symbols[0].file_path
+            elif context.related_files:
+                target_file = context.related_files[0]
             
         fallback_plan = {
             "objective": context.intent.action,
-            "targets": [context.intent.target] if context.intent.target != "unknown" else [],
+            "targets": resolved_symbols if resolved_symbols else ([context.intent.target] if context.intent.target != "unknown" else []),
             "required_changes": [context.intent.domain] if context.intent.domain != "unknown" else ["modification"],
             "verification": ["unit_tests"],
             "target_file": target_file,
             "failures": context.previous_attempts
         }
+
+        # Enforce hard execution mode restriction: LLM planning is forbidden for non-AGENT modes
+        from runtime.fast_path_router import FastPathRouter
+        from core.execution_mode import ExecutionMode
+
+        mode = ExecutionMode.AGENT
+        try:
+            route_decision = FastPathRouter.route(context.goal)
+            mode = route_decision.execution_mode
+        except Exception:
+            pass
+
+        if mode != ExecutionMode.AGENT:
+            print(f"[Planner] Non-AGENT execution mode detected ({mode}). Bypassing LLM planning.")
+            return fallback_plan
 
         # Try querying Ollama
         try:
@@ -42,6 +79,10 @@ class Planner:
 Analyze the goal and codebase context to produce a high-level intent plan in JSON format.
 
 GOAL: {context.goal}
+
+DETECTION HINTS:
+- Resolved Target Files: {resolved_files}
+- Resolved Target Symbols: {resolved_symbols}
 
 TARGET SYMBOLS:
 {target_sym_desc}

@@ -186,8 +186,8 @@ def test_context_builder_integration():
     executor = MockExecutor()
     builder = ContextBuilder(executor.retrieval_pipeline)
     
-    # Run build_planning_context
-    context = builder.build_planning_context(goal="Add logging to EmployeeService")
+    # Run build_planning_context in agent mode to include memory context
+    context = builder.build_planning_context(goal="Add logging to EmployeeService", mode="agent")
     
     # Verify new memory fields populated on ContextPackage
     assert hasattr(context, "past_episodes")

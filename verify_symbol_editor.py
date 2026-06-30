@@ -247,6 +247,275 @@ new updated code block
         if target_file_abs.exists():
             target_file_abs.unlink(missing_ok=True)
 
+    # -------------------------------------------------------------
+    # Test 5: ASTLocator for TypeScript/JavaScript Symbols
+    # -------------------------------------------------------------
+    print("\n[Test 5] Testing ASTLocator finding TypeScript class, method, and function declarations...")
+    ts_code = """
+class UserService {
+    private users: string[] = [];
+
+    public addUser(name: string): void {
+        this.users.push(name);
+    }
+}
+
+function globalHelper() {
+    return 42;
+}
+"""
+    ts_file = repo_root / "temp_UserService.ts"
+    ts_file.write_text(ts_code, encoding="utf-8")
+
+    try:
+        # Locate Class
+        class_info = locator.find_symbol(str(ts_file), "UserService", ts_code)
+        assert class_info is not None, "Expected to locate TypeScript class UserService"
+        assert class_info.node_type == "class_declaration"
+        assert class_info.start_line == 2
+        print("  [OK] Successfully located TypeScript class 'UserService'.")
+
+        # Locate Method
+        method_info = locator.find_symbol(str(ts_file), "UserService.addUser", ts_code)
+        assert method_info is not None, "Expected to locate TypeScript method UserService.addUser"
+        assert method_info.node_type == "method_definition"
+        assert method_info.start_line == 5
+        print("  [OK] Successfully located TypeScript method 'UserService.addUser'.")
+
+        # Locate Global Function
+        func_info = locator.find_symbol(str(ts_file), "globalHelper", ts_code)
+        assert func_info is not None, "Expected to locate TypeScript global function globalHelper"
+        assert func_info.node_type == "function_declaration"
+        assert func_info.start_line == 10
+        print("  [OK] Successfully located TypeScript global function 'globalHelper'.")
+
+    finally:
+        ts_file.unlink(missing_ok=True)
+
+    # -------------------------------------------------------------
+    # Test 6: SymbolResolutionError on Unresolved Symbols
+    # -------------------------------------------------------------
+    print("\n[Test 6] Testing SymbolResolver raising SymbolResolutionError on unresolved symbols...")
+    from editing.symbol_resolver import SymbolResolver, SymbolResolutionError
+    resolver = SymbolResolver()
+    
+    # Create a dummy file that exists
+    dummy_file = repo_root / "temp_dummy_service.py"
+    dummy_file.write_text("class DummyService:\n    pass\n", encoding="utf-8")
+    
+    try:
+        # Resolving a non-existent symbol in the file should raise SymbolResolutionError
+        try:
+            resolver.resolve("DummyService.non_existent_method", file_path=str(dummy_file), allow_fallback=False)
+            assert False, "Expected SymbolResolutionError to be raised"
+        except SymbolResolutionError as e:
+            print(f"  [OK] Successfully caught expected SymbolResolutionError: {e}")
+            
+        # Resolving with allow_fallback=True should fallback instead of raising
+        fallback_handles = resolver.resolve("DummyService.non_existent_method", file_path=str(dummy_file), allow_fallback=True)
+        assert len(fallback_handles) == 1, "Expected 1 fallback handle"
+        assert fallback_handles[0].kind == "fallback", f"Expected kind to be fallback, got {fallback_handles[0].kind}"
+        print("  [OK] Successfully verified fallback allowed option.")
+        
+    finally:
+        dummy_file.unlink(missing_ok=True)
+
+    # -------------------------------------------------------------
+    # Test 7: SymbolResolver fallback behavior based on execution mode
+    # -------------------------------------------------------------
+    print("\n[Test 7] Testing SymbolResolver fallback restriction based on execution mode...")
+    from memory.state_manager import StateManager
+    
+    # Create a dummy file that exists
+    dummy_file = repo_root / "temp_dummy_service_2.py"
+    dummy_file.write_text("class DummyService2:\n    pass\n", encoding="utf-8")
+    
+    try:
+        # Scenario A: PATCH Mode (goal routes to PATCH) -> fallback should be forbidden
+        patch_state_mgr = StateManager()
+        patch_state_mgr.create_task(goal="update salary", task_id="test_task_patch")
+        
+        resolver_patch = SymbolResolver(state_manager=patch_state_mgr)
+        
+        try:
+            resolver_patch.resolve(
+                "DummyService2.non_existent_method", 
+                file_path=str(dummy_file), 
+                allow_fallback=True
+            )
+            assert False, "Expected SymbolResolutionError to be raised in PATCH mode even when allow_fallback=True"
+        except SymbolResolutionError as e:
+            print(f"  [OK] Successfully caught expected SymbolResolutionError in PATCH mode: {e}")
+            
+        # Scenario B: AGENT Mode (goal routes to AGENT) -> fallback should be allowed
+        agent_state_mgr = StateManager()
+        agent_state_mgr.create_task(goal="complex request", task_id="test_task_agent")
+        
+        resolver_agent = SymbolResolver(state_manager=agent_state_mgr)
+        
+        fallback_handles = resolver_agent.resolve(
+            "DummyService2.non_existent_method", 
+            file_path=str(dummy_file), 
+            allow_fallback=True
+        )
+        assert len(fallback_handles) == 1, "Expected 1 fallback handle in AGENT mode"
+        assert fallback_handles[0].kind == "fallback", f"Expected fallback handle, got {fallback_handles[0].kind}"
+        print("  [OK] Successfully verified fallback allowed in AGENT mode.")
+        
+    finally:
+        dummy_file.unlink(missing_ok=True)
+
+    # -------------------------------------------------------------
+    # Test 8: JavaAdapter AST surgical boundaries verification
+    # -------------------------------------------------------------
+    print("\n[Test 8] Testing JavaAdapter AST surgical boundaries with JavaParser...")
+    from editing.language_adapter import JavaAdapter
+    from editing.models.edit_plan import ReplaceMethodBody
+    from editing.symbol_handle import SymbolHandle
+    
+    java_code = """package com.example.service;
+public class EmployeeService {
+    public void raiseSalary(Employee emp, double percentage) {
+        double current = emp.getSalary();
+        emp.setSalary(current * (1 + percentage));
+    }
+    
+    public EmployeeService() {
+        // constructor
+    }
+}
+"""
+    # Create temp java file
+    java_file = repo_root / "TempEmployeeService.java"
+    java_file.write_text(java_code, encoding="utf-8")
+    
+    try:
+        adapter = JavaAdapter()
+        plan = ReplaceMethodBody(
+            symbol="EmployeeService.raiseSalary",
+            goal="update method body",
+        )
+        symbol_handle = SymbolHandle(
+            symbol_id="sym_raiseSalary",
+            fqn="EmployeeService.raiseSalary",
+            kind="method",
+            file_path=str(java_file),
+            start_line=3,
+            end_line=6
+        )
+        
+        # Build patch (uses JavaParser under the hood to locate boundaries)
+        patch = adapter.build_patch(
+            plan=plan,
+            symbol=symbol_handle,
+            original_content=java_code
+        )
+        
+        # Verify the patch old_text is exactly the raiseSalary method block!
+        assert "public void raiseSalary" in patch.old_text, "Expected raiseSalary signature in old_text"
+        assert "emp.setSalary" in patch.old_text, "Expected method body in old_text"
+        assert "public EmployeeService()" not in patch.old_text, "Expected constructor to not be in old_text"
+        print("  [OK] Successfully verified raiseSalary method AST boundaries.")
+        
+        # Now let's try matching the constructor
+        constructor_handle = SymbolHandle(
+            symbol_id="sym_constructor",
+            fqn="EmployeeService.EmployeeService",
+            kind="constructor",
+            file_path=str(java_file),
+            start_line=8,
+            end_line=10
+        )
+        patch_constructor = adapter.build_patch(
+            plan=plan,
+            symbol=constructor_handle,
+            original_content=java_code
+        )
+        assert "public EmployeeService()" in patch_constructor.old_text, "Expected constructor in old_text"
+        assert "raiseSalary" not in patch_constructor.old_text, "Expected raiseSalary to not be in constructor old_text"
+        print("  [OK] Successfully verified constructor AST boundaries.")
+        
+    finally:
+        java_file.unlink(missing_ok=True)
+
+    # -------------------------------------------------------------
+    # Test 9: TypeScriptAdapter AST surgical boundaries verification
+    # -------------------------------------------------------------
+    print("\n[Test 9] Testing TypeScriptAdapter AST surgical boundaries with TypeScriptParser...")
+    from editing.language_adapter import TypeScriptAdapter
+    from editing.models.edit_plan import ReplaceMethodBody
+    from editing.symbol_handle import SymbolHandle
+    
+    ts_code = """import React from 'react';
+export interface User {
+    id: string;
+    name: string;
+}
+
+export class UserService {
+    public getUser(id: string): User {
+        return { id, name: 'John Doe' };
+    }
+}
+
+export const useUser = (id: string) => {
+    return { user: { id, name: 'Hook User' } };
+};
+"""
+    # Create temp typescript file
+    ts_file = repo_root / "TempUserService.tsx"
+    ts_file.write_text(ts_code, encoding="utf-8")
+    
+    try:
+        adapter = TypeScriptAdapter()
+        plan = ReplaceMethodBody(
+            symbol="UserService.getUser",
+            goal="update getUser method",
+        )
+        symbol_handle = SymbolHandle(
+            symbol_id="sym_getUser",
+            fqn="UserService.getUser",
+            kind="method",
+            file_path=str(ts_file),
+            start_line=8,
+            end_line=10
+        )
+        
+        # Build patch
+        patch = adapter.build_patch(
+            plan=plan,
+            symbol=symbol_handle,
+            original_content=ts_code
+        )
+        
+        # Verify the patch old_text is exactly the getUser method block!
+        assert "getUser(id: string)" in patch.old_text, "Expected getUser signature in old_text"
+        assert "John Doe" in patch.old_text, "Expected method body in old_text"
+        assert "export const useUser" not in patch.old_text, "Expected hook to not be in old_text"
+        print("  [OK] Successfully verified getUser method AST boundaries.")
+        
+        # Now try matching the arrow function hook
+        hook_handle = SymbolHandle(
+            symbol_id="sym_useUser",
+            fqn="useUser",
+            kind="function",
+            file_path=str(ts_file),
+            start_line=13,
+            end_line=15
+        )
+        patch_hook = adapter.build_patch(
+            plan=plan,
+            symbol=hook_handle,
+            original_content=ts_code
+        )
+        assert "export const useUser = " in patch_hook.old_text, "Expected arrow function declaration in old_text"
+        assert "Hook User" in patch_hook.old_text, "Expected arrow function body in old_text"
+        assert "getUser" not in patch_hook.old_text, "Expected method to not be in arrow function old_text"
+        print("  [OK] Successfully verified arrow function hook AST boundaries.")
+        
+    finally:
+        ts_file.unlink(missing_ok=True)
+
     print("\n" + "=" * 60)
     print("  ALL AST-BACKED SYMBOL EDITOR TESTS PASSED! [OK]")
     print("=" * 60 + "\n")

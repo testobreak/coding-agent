@@ -1,23 +1,19 @@
 # repository/patch_generator.py
-
-from difflib import unified_diff
-
+from editing.patch import FilePatch, PatchSet, PatchType, PatchFormatter
 
 class PatchGenerator:
-
     def generate(
         self,
         original_content: str,
         modified_content: str,
         path: str
     ) -> str:
-
-        diff = unified_diff(
-            original_content.splitlines(),
-            modified_content.splitlines(),
-            fromfile=path,
-            tofile=path,
-            lineterm=""
+        patch = FilePatch(
+            file_path=path,
+            patch_type=PatchType.REPLACE,
+            start_line=1,
+            end_line=max(1, len(original_content.splitlines())),
+            old_text=original_content,
+            new_text=modified_content
         )
-
-        return "\n".join(diff)
+        return PatchFormatter.to_unified_diff(PatchSet(patches=[patch]))

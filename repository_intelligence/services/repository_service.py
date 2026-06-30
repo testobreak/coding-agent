@@ -186,6 +186,11 @@ class RepositoryService:
             )
             session.commit()
 
+            try:
+                self._build_symbol_index(session, repository)
+            except Exception as index_err:
+                print(f"[RepositoryService] Warning: Failed to build JSON symbol index: {index_err}")
+
             return {
                 "repository_id": str(repository.id),
                 "repository_root": str(repository_root_path),
@@ -329,6 +334,27 @@ class RepositoryService:
             seen.add(key)
             unique_extracted_symbols.append(extracted)
 
+        # Clear existing symbol spans to prevent duplicate constraint violation
+        from repository_intelligence.models.symbol import SymbolSpan
+        from repository_intelligence.parsers import get_parser
+        import os
+        import re
+
+        session.query(SymbolSpan).filter(SymbolSpan.file_id == file_row.id).delete()
+        session.flush()
+
+        # Try to resolve parser for current file path
+        parser = None
+        full_path = ""
+        try:
+            repo_root = os.getcwd()
+            if os.path.basename(repo_root) == ".agent":
+                repo_root = os.path.dirname(repo_root)
+            full_path = os.path.join(repo_root, file_row.path)
+            parser = get_parser(full_path)
+        except Exception as parser_ex:
+            print(f"[RepositoryService] Parser load skipped: {parser_ex}")
+
         # Persist unique symbol configurations
         for extracted in unique_extracted_symbols:
             symbol = Symbol(
@@ -346,6 +372,66 @@ class RepositoryService:
             session.add(symbol)
             session.flush()
             symbols_by_name[extracted.qualified_name] = symbol
+
+        # Now persist all extracted symbols to SymbolSpan (including overloads!)
+        seen_spans = set()
+        for extracted in extracted_symbols:
+            span_key = (extracted.qualified_name, extracted.signature)
+            if span_key in seen_spans:
+                continue
+            seen_spans.add(span_key)
+
+            # Determine start/end byte offsets
+            start_byte = 0
+            end_byte = 0
+            try:
+                if os.path.exists(full_path):
+                    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                        source_content = f.read()
+
+                    located = None
+                    if parser:
+                        located = parser.locate_symbol(full_path, extracted.name, source_content)
+                    
+                    if located:
+                        lines = source_content.splitlines(keepends=True)
+                        start_byte = sum(len(l) for l in lines[:located[0] - 1]) + located[1]
+                        end_byte = sum(len(l) for l in lines[:located[2] - 1]) + located[3]
+                    else:
+                        lines = source_content.splitlines(keepends=True)
+                        s_line = max(1, extracted.start_line)
+                        e_line = max(s_line, extracted.end_line)
+                        start_byte = sum(len(l) for l in lines[:s_line - 1])
+                        end_byte = sum(len(l) for l in lines[:e_line])
+            except Exception as byte_ex:
+                print(f"[RepositoryService] Byte calculation fallback: {byte_ex}")
+
+            # Calculate qualified signature for Java overloads (e.g. EmployeeService.save(Employee))
+            qualified_signature = extracted.qualified_name
+            if file_row.language == "java" and extracted.signature:
+                params_match = re.search(r"\((.*?)\)", extracted.signature)
+                if params_match:
+                    params_str = params_match.group(1).strip()
+                    param_types = []
+                    if params_str:
+                        for p in params_str.split(","):
+                            p_parts = p.strip().split()
+                            if p_parts:
+                                param_types.append(p_parts[0])
+                    qualified_signature = f"{extracted.qualified_name}({','.join(param_types)})"
+
+            # Create and add SymbolSpan record
+            span = SymbolSpan(
+                file_id=file_row.id,
+                symbol=extracted.name,
+                kind=extracted.symbol_type or "method",
+                start_byte=start_byte,
+                end_byte=end_byte,
+                language=file_row.language or "python",
+                qualified_signature=qualified_signature
+            )
+            session.add(span)
+            session.flush()
 
         # Map hierarchical parent references consistently 
         for extracted in unique_extracted_symbols:
@@ -695,3 +781,40 @@ class RepositoryService:
             created += 1
 
         return created
+
+    def _build_symbol_index(self, session, repository) -> None:
+        import json
+        import os
+        from repository_intelligence.models.symbol import Symbol
+        from repository_intelligence.models.file import File
+
+        symbols = session.query(Symbol, File).join(File, Symbol.file_id == File.id).filter(Symbol.repository_id == repository.id).all()
+        
+        index_data = {}
+        for sym, file_row in symbols:
+            parent_name = ""
+            if sym.parent_symbol_id:
+                parent_sym = session.query(Symbol).filter(Symbol.id == sym.parent_symbol_id).first()
+                if parent_sym:
+                    parent_name = parent_sym.name
+            
+            key = sym.qualified_name
+            index_data[key] = {
+                "file_path": file_row.path,
+                "start_line": sym.start_line,
+                "end_line": sym.end_line,
+                "type": sym.symbol_type.lower() if sym.symbol_type else "method",
+                "parent": parent_name
+            }
+
+        repo_root = os.getcwd()
+        if os.path.basename(repo_root) == ".agent":
+            repo_root = os.path.dirname(repo_root)
+        
+        agent_dir = os.path.join(repo_root, ".agent", "repository")
+        os.makedirs(agent_dir, exist_ok=True)
+        index_path = os.path.join(agent_dir, "symbol_index.json")
+        
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(index_data, f, indent=2)
+        print(f"[RepositoryService] Symbol index built at {index_path} with {len(index_data)} symbols.")

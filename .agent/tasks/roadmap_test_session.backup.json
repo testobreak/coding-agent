@@ -2,10 +2,10 @@
   "goal": "Verify final roadmap fixes",
   "status": "active",
   "session_id": null,
-  "created_at": "2026-05-23T08:59:30.833525",
-  "updated_at": "2026-05-23T08:59:36.956746",
+  "created_at": "2026-06-26T10:41:07.230444",
+  "updated_at": "2026-06-26T10:41:13.317210",
   "version": 1,
-  "checkpoint_count": 3,
+  "checkpoint_count": 4,
   "current_step": "",
   "completed_steps": [],
   "failed_steps": [],
@@ -15,9 +15,9 @@
       "action_id": "checkpoint-b",
       "tool": "create_checkpoint",
       "status": "completed",
-      "started_at": "2026-05-23T08:59:36.765024",
-      "completed_at": "2026-05-23T08:59:36.954217+00:00",
-      "duration_seconds": 0.1892375946044922,
+      "started_at": "2026-06-26T10:41:13.021094",
+      "completed_at": "2026-06-26T10:41:13.222608+00:00",
+      "duration_seconds": 0.2392420768737793,
       "retries": 0,
       "success": true,
       "input_data": {
@@ -27,7 +27,7 @@
           "message": "checkpoint:targeted_file.txt"
         }
       },
-      "output_data": "e0a01e0 checkpoint:targeted_file.txt",
+      "output_data": "stash@{0}",
       "error": ""
     }
   ],
@@ -36,16 +36,27 @@
   "reflections": [],
   "touched_files": [],
   "modified_files": [],
-  "modification_targets": [],
+  "modification_targets": [
+    "mock_service.java"
+  ],
   "active_symbols": [],
   "architecture_notes": [],
-  "retrieved_chunks": [],
+  "retrieved_chunks": [
+    {
+      "chunk_id": "mock_chunk_1",
+      "file": "mock_service.java",
+      "name": "MockService",
+      "type": "ClassDef",
+      "code": "public class MockService { }",
+      "score": 0.95
+    }
+  ],
   "generated_code": [],
   "tool_outputs": [
     {
       "tool": "create_checkpoint",
       "status": "success",
-      "result": "e0a01e0 checkpoint:targeted_file.txt"
+      "result": "stash@{0}"
     }
   ],
   "command_history": [],
@@ -67,6 +78,8 @@
     "execution_time_seconds": 0.0,
     "metadata": {}
   },
+  "execution_plan": null,
+  "execution_state": "PLANNING",
   "metadata": {},
   "_version": 1
 }

@@ -301,19 +301,7 @@ class RepositoryStore:
         top_k: int = 10,
         min_score: float = 0.20,
     ) -> list[dict]:
-        query_vector = self.encode_query(query)
-        scored = []
-
-        for item in persisted:
-            score = self._cosine(query_vector, item.vector)
-
-            if score < min_score:
-                continue
-
-            scored.append({"score": score, "chunk": item.chunk})
-
-        scored.sort(key=lambda result: result["score"], reverse=True)
-        return scored[:top_k]
+        raise RuntimeError("Legacy retrieval disabled. Use CandidatePipeline via CodeRetriever.")
 
     def _embedding_chunk(
         self,

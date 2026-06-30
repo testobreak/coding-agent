@@ -143,6 +143,19 @@ class ContextPackage:
         return res
 
     @property
+    def retrieved_chunks(self) -> List[Dict[str, Any]]:
+        chunks = []
+        for s in self.snippets:
+            chunks.append({
+                "file": self.primary_symbol.file_path if self.primary_symbol else "",
+                "symbol": s.symbol,
+                "content": s.source,
+                "relevance": s.relevance,
+                "chunk_id": s.symbol
+            })
+        return chunks
+
+    @property
     def related_files(self) -> List[str]:
         files = set()
         if self.primary_symbol and self.primary_symbol.file_path:

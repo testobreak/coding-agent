@@ -1,9 +1,9 @@
 # retrieval/retrieval_pipeline.py
 
 from collections import defaultdict
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Optional
 from retrieval.hybrid_ranker import HybridRanker
-
+from retrieval.feature_extractor import RetrievalContext
 
 class RetrievalPipeline:
 
@@ -13,6 +13,78 @@ class RetrievalPipeline:
     ):
         self.retriever = retriever
         self.ranking_engine = HybridRanker()
+
+    def retrieve(
+        self,
+        query: str,
+        context: Optional[RetrievalContext] = None,
+        top_k: int = 10
+    ) -> List[Dict[str, Any]]:
+        # Fast-path 1: Lexical/symbol bypass for pure symbol name lookups
+        import re
+        is_lexical_only = False
+        query_clean = query.strip()
+        if re.match(r"^[a-zA-Z0-9_\.]+$", query_clean):
+            is_lexical_only = True
+
+        candidates = []
+        if is_lexical_only:
+            query_lower = query_clean.lower()
+            for chunk in self.retriever.chunks:
+                f = (chunk.get("file") or "").lower()
+                if any(p in f for p in [".agent/", "repository_intelligence/", "venv/", "node_modules/", ".git/"]):
+                    continue
+                name = (chunk.get("name") or "").lower()
+                symbol = (chunk.get("symbol") or "").lower()
+                if query_lower == name or query_lower == symbol or query_lower in f:
+                    candidates.append({"score": 100.0, "chunk": chunk})
+            
+            from retrieval.ranker import SpecRanker
+            reranked = SpecRanker.rerank_candidates(candidates, context=context)
+            return [{"chunk": item["chunk"], "score": item["score"]} for item in reranked[:top_k]]
+
+        # Fast-path 2: Graph shortcut for test queries ("tests for <Symbol>")
+        if "tests for" in query.lower():
+            target_symbol = query.lower().replace("tests for", "").strip()
+            if re.match(r"^[a-zA-Z0-9_\.]+$", target_symbol):
+                from repository_intelligence.db.connection import SessionLocal
+                from repository_intelligence.models.symbol import Symbol, Test as DBTest
+                session = SessionLocal()
+                from sqlalchemy import func
+                try:
+                    sym_row = session.query(Symbol).filter(
+                        (func.lower(Symbol.name) == target_symbol) | 
+                        (func.lower(Symbol.qualified_name) == target_symbol)
+                    ).first()
+                    if sym_row:
+                        test_rows = session.query(DBTest).filter(DBTest.target_symbol_id == sym_row.id).all()
+                        test_file_ids = [t.file_id for t in test_rows]
+                        if test_file_ids:
+                            for chunk in self.retriever.chunks:
+                                if chunk.get("file_id") in test_file_ids or any(tf in chunk.get("file", "") for tf in test_file_ids):
+                                    candidates.append({"score": 100.0, "chunk": chunk})
+                                elif "test" in chunk.get("file", "").lower() and target_symbol in chunk.get("file", "").lower():
+                                    candidates.append({"score": 90.0, "chunk": chunk})
+                except Exception as ex:
+                    print(f"[RetrievalPipeline] Graph fast-path query error: {ex}")
+                finally:
+                    session.close()
+
+                from retrieval.ranker import SpecRanker
+                reranked = SpecRanker.rerank_candidates(candidates, context=context)
+                return [{"chunk": item["chunk"], "score": item["score"]} for item in reranked[:top_k]]
+
+        # Fallback to Stage 1: Broad recall (Vector search gets candidate pool of top 100 chunks)
+        candidates = self.retriever.search(query=query, top_k=100)
+        if not candidates:
+            return []
+
+        # Stage 2 & 3: Feature enrichment and reranking
+        from retrieval.ranker import SpecRanker
+        reranked = SpecRanker.rerank_candidates(candidates, context=context)
+
+        # Map back to original structure format (List of {"chunk": chunk, "score": score})
+        return [{"chunk": item["chunk"], "score": item["score"]} for item in reranked[:top_k]]
 
     # =====================================================
     # MAIN / SINGLE-QUERY RETRIEVAL
@@ -25,10 +97,22 @@ class RetrievalPipeline:
         expand_context=True,
         goal=None
     ):
-        results = self.retriever.search(
-            query=query,
-            top_k=top_k
-        )
+        # Resolve RetrievalContext dynamically from SessionCache
+        from context.session_cache import SessionCache
+        session_ctx = SessionCache.get_session("default")
+        
+        context = None
+        if session_ctx:
+            context = RetrievalContext(
+                active_file=session_ctx.active_file,
+                open_tabs=session_ctx.open_files,
+                active_symbol=session_ctx.recent_symbols[0] if session_ctx.recent_symbols else None,
+                recent_files=session_ctx.open_files,
+                diagnostics=session_ctx.diagnostics
+            )
+
+        # Call retrieve with the resolved context
+        results = self.retrieve(query=query, context=context, top_k=top_k * 2)
 
         if not results:
             return []
@@ -64,10 +148,10 @@ class RetrievalPipeline:
         existing_chunk_ids = {r["chunk"].get("chunk_id") for r in results if r["chunk"].get("chunk_id")}
 
         try:
-            # 1. Collect symbol names and files from current results
+            # 1. Collect symbol names and files from only the top 3 results to limit noise
             symbol_names = set()
             file_paths = set()
-            for r in results:
+            for r in results[:3]:
                 chunk = r["chunk"]
                 sym = chunk.get("symbol") or chunk.get("name")
                 if sym:

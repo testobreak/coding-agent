@@ -70,6 +70,8 @@ class JavaParser:
                     line_end=node.end_point[0] + 1,
                     parent=parent_class,
                     signature=self._class_signature(node, src),
+                    start_byte=node.start_byte,
+                    end_byte=node.end_byte,
                 )
                 result.classes.append(sym)
                 # Recurse into class body using this class as parent
@@ -87,6 +89,8 @@ class JavaParser:
                     line_start=node.start_point[0] + 1,
                     line_end=node.end_point[0] + 1,
                     signature=f"interface {name}",
+                    start_byte=node.start_byte,
+                    end_byte=node.end_byte,
                 ))
                 for child in node.children:
                     self._walk(child, src, result, parent_class=name)
@@ -102,6 +106,8 @@ class JavaParser:
                     line_start=node.start_point[0] + 1,
                     line_end=node.end_point[0] + 1,
                     signature=f"enum {name}",
+                    start_byte=node.start_byte,
+                    end_byte=node.end_byte,
                 ))
                 for child in node.children:
                     self._walk(child, src, result, parent_class=name)
@@ -118,6 +124,8 @@ class JavaParser:
                     line_end=node.end_point[0] + 1,
                     parent=parent_class,
                     signature=self._method_signature(node, src),
+                    start_byte=node.start_byte,
+                    end_byte=node.end_byte,
                 ))
             # Don't descend further — inner classes inside method bodies are rare
             return
@@ -133,6 +141,8 @@ class JavaParser:
                     line_end=node.end_point[0] + 1,
                     parent=parent_class,
                     signature=f"{name}(constructor)",
+                    start_byte=node.start_byte,
+                    end_byte=node.end_byte,
                 ))
             return
 

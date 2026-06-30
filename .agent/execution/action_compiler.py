@@ -90,10 +90,10 @@ class ActionCompiler:
             ]
 
         # =============================================
-        # MODIFY
+        # SPAN ACTIONS (REPLACE_SPAN, INSERT_AFTER, INSERT_BEFORE, DELETE_SPAN)
         # =============================================
 
-        elif action_type == MODIFY:
+        elif action_type in (REPLACE_SPAN, INSERT_AFTER, INSERT_BEFORE, DELETE_SPAN):
 
             return [
                 self.build_action(
@@ -102,7 +102,8 @@ class ActionCompiler:
                     args={
                         "symbol": action.target or "unknown",
                         "path": action.file_path,
-                        "goal": action.reasoning or ""
+                        "goal": action.reasoning or "",
+                        "operation": action_type
                     }
                 )
             ]

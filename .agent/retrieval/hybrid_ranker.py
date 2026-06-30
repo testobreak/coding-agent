@@ -52,6 +52,7 @@ class RetrievalCandidate:
         self.impact_score = 0.0
         self.test_score = 0.0
         self.historical_score = 0.0
+        self.lexical_score = 0.0
         
         self.final_score = 0.0
 
@@ -69,6 +70,10 @@ class HybridRanker:
         self.impact_weight = 0.10
         self.test_weight = 0.05
         self.historical_weight = 0.05
+        
+        # Instantiate local cross-encoder model
+        from retrieval.cross_encoder import CrossEncoderReranker
+        self.cross_encoder = CrossEncoderReranker()
 
     def extract_target_symbols(self, query: str) -> List[str]:
         """
@@ -171,6 +176,39 @@ class HybridRanker:
             except Exception as e:
                 print(f"[HybridRanker] Checkpoint scan skipped: {e}")
 
+            from retrieval.query_intent import RetrievalIntentClassifier, RetrievalIntent
+            intent = RetrievalIntentClassifier.classify(query)
+
+            # Select weights dynamically based on query intent
+            if intent == RetrievalIntent.MODIFY_SYMBOL or intent == RetrievalIntent.BUG_FIX:
+                w_semantic = 0.45
+                w_symbol = 0.25
+                w_lexical = 0.15
+                w_path = 0.10
+                w_graph = 0.00
+                w_history = 0.05
+            elif intent == RetrievalIntent.REFACTOR:
+                w_semantic = 0.40
+                w_symbol = 0.20
+                w_lexical = 0.00
+                w_path = 0.10
+                w_graph = 0.20
+                w_history = 0.10
+            elif intent == RetrievalIntent.EXPLAIN:
+                w_semantic = 0.60
+                w_symbol = 0.15
+                w_lexical = 0.15
+                w_path = 0.05
+                w_graph = 0.00
+                w_history = 0.05
+            else: # SEARCH / DEFAULT
+                w_semantic = 0.50
+                w_symbol = 0.20
+                w_lexical = 0.15
+                w_path = 0.10
+                w_graph = 0.00
+                w_history = 0.05
+
             for item in candidates:
                 cand = RetrievalCandidate(item)
                 chunk = cand.chunk
@@ -181,39 +219,39 @@ class HybridRanker:
                 sname = chunk.get("symbol") or chunk.get("name")
                 symbol_row = db_symbols.get(sname) if sname else None
 
-                # Calculate 7 distinct signals (each normalized to 0 - 100 range)
-                
-                # Signal 1: Embedding score
+                # Calculate raw signals (normalized to 0 - 100 range)
                 cand.embedding_score = self.compute_embedding_score(item)
-
-                # Signal 2: Symbol exact/partial match
                 cand.symbol_score = self.compute_symbol_score(targets, chunk, symbol_row)
-
-                # Signal 3: Graph centrality & direct connections
-                cand.graph_score = self.compute_graph_score(db_session, symbol_row, targets)
-
-                # Signal 4: Path segment match
+                cand.lexical_score = self.compute_lexical_score(query, chunk)
                 cand.path_score = self.compute_path_score(query, fpath)
-
-                # Signal 5: Impact boundary neighbors
+                cand.graph_score = self.compute_graph_score(db_session, symbol_row, targets)
+                cand.historical_score = self.compute_historical_score(fpath, committed_files)
                 cand.impact_score = self.compute_impact_score(db_session, symbol_row, file_row, targets)
-
-                # Signal 6: Test relationships
                 cand.test_score = self.compute_test_score(db_session, symbol_row, file_row, targets)
 
-                # Signal 7: Historical success modifications
-                cand.historical_score = 100.0 if fpath in committed_files else 0.0
+                # Normalize components to [0, 1] range for Cursor compatibility
+                semantic = cand.embedding_score / 100.0
+                symbol = cand.symbol_score / 100.0
+                path = cand.path_score / 100.0
+                graph = cand.graph_score / 100.0
+                history = cand.historical_score / 100.0
+                impact = cand.impact_score / 100.0
+                test = cand.test_score / 100.0
 
-                # Compute exact composite score
+                # Compute final score using the 7-signal weights
                 cand.final_score = (
-                    cand.symbol_score     * self.symbol_weight
-                    + cand.graph_score      * self.graph_weight
-                    + cand.embedding_score  * self.embedding_weight
-                    + cand.path_score       * self.path_weight
-                    + cand.impact_score     * self.impact_weight
-                    + cand.test_score       * self.test_weight
-                    + cand.historical_score * self.historical_weight
+                    symbol     * self.symbol_weight
+                    + graph      * self.graph_weight
+                    + semantic   * self.embedding_weight
+                    + path       * self.path_weight
+                    + impact     * self.impact_weight
+                    + test       * self.test_weight
+                    + history    * self.historical_weight
                 )
+
+                # Apply exact symbol match boost (Cursor-like boosting)
+                if cand.symbol_score == 100.0:
+                    cand.final_score += 4.0
 
                 # Save metrics in chunk for transparency and logging
                 chunk["_ranking_diagnostics"] = {
@@ -221,12 +259,14 @@ class HybridRanker:
                     "graph": cand.graph_score,
                     "embedding": cand.embedding_score,
                     "path": cand.path_score,
+                    "lexical": cand.lexical_score,
+                    "recency": cand.historical_score,
                     "impact": cand.impact_score,
-                    "test": cand.test_score,
-                    "historical": cand.historical_score
+                    "test": cand.test_score
                 }
 
-                item["score"] = cand.final_score
+                # Convert final score back to 0-100 range for display/compatibility
+                item["score"] = cand.final_score * 100.0
                 ranked_items.append(item)
 
         except Exception as e:
@@ -238,7 +278,60 @@ class HybridRanker:
                 db_session.close()
 
         # Sort descending by composite score
-        return sorted(ranked_items, key=lambda x: x.get("score", 0.0), reverse=True)
+        sorted_candidates = sorted(ranked_items, key=lambda x: x.get("score", 0.0), reverse=True)
+
+        # Apply local cross-encoder reranking on top 30 candidates to improve correctness
+        if self.cross_encoder and getattr(self.cross_encoder, "available", False):
+            top_30 = sorted_candidates[:30]
+            rest = sorted_candidates[30:]
+            
+            # Store original scores for blending
+            for item in top_30:
+                item["score_before_ce"] = item["score"]
+                
+            try:
+                # self.cross_encoder.rerank rescored candidates descendingly
+                reranked_top_30 = self.cross_encoder.rerank(query, top_30, k=len(top_30))
+                
+                # Blend cross-encoder score and hybrid score
+                import math
+                for item in reranked_top_30:
+                    raw_score = item["score"] # Logit score from cross-encoder
+                    try:
+                        sig_score = 1.0 / (1.0 + math.exp(-raw_score))
+                    except OverflowError:
+                        sig_score = 0.0 if raw_score < 0 else 1.0
+                    
+                    orig_score_norm = item.get("score_before_ce", 0.0) / 100.0
+                    
+                    # If orig_score_norm was boosted (i.e. >= 4.0), remove the boost for blending
+                    is_boosted = False
+                    if orig_score_norm >= 4.0:
+                        orig_score_norm -= 4.0
+                        is_boosted = True
+                    
+                    # Blend: 60% semantic cross-encoder, 40% metadata/hybrid signals
+                    blended = 0.60 * sig_score + 0.40 * orig_score_norm
+                    item["score"] = blended * 100.0
+                    
+                    # Apply boost after blending
+                    if is_boosted:
+                        item["score"] += 400.0
+                    
+                    # Save metrics for transparency
+                    chunk = item.get("chunk", {})
+                    if "_ranking_diagnostics" in chunk:
+                        chunk["_ranking_diagnostics"]["cross_encoder_score"] = raw_score
+                        chunk["_ranking_diagnostics"]["cross_encoder_sig_score"] = sig_score
+                        chunk["_ranking_diagnostics"]["blended_score"] = item["score"]
+                
+                # Sort the blended top 30 again
+                reranked_top_30.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+                sorted_candidates = reranked_top_30 + rest
+            except Exception as e:
+                print(f"[HybridRanker] Cross-encoder reranking failed: {e}")
+
+        return sorted_candidates
 
     def compute_embedding_score(self, item: Dict[str, Any]) -> float:
         score = item.get("score", 0.0)
@@ -275,7 +368,6 @@ class HybridRanker:
         if not symbol or not targets:
             return 0.0
 
-        # Check for direct relationship (1st-degree hop) in DB targeting query symbols
         target_rows = session.query(Symbol.id).filter(
             Symbol.qualified_name.in_(targets) | Symbol.name.in_(targets)
         ).all()
@@ -412,4 +504,33 @@ class HybridRanker:
                 print(f"[HybridRanker] Test score computation exception: {e}")
 
         return 50.0 if is_test_file else 0.0
+
+    def compute_lexical_score(self, query: str, chunk: Dict[str, Any]) -> float:
+        """Calculate token-overlap/lexical matching score between query and candidate metadata."""
+        query_words = set(re.findall(r"\b\w+\b", query.lower()))
+        if not query_words:
+            return 0.0
+            
+        symbol_name = (chunk.get("symbol") or chunk.get("name") or "").lower()
+        file_path = (chunk.get("file") or "").lower()
+        code_content = (chunk.get("code") or chunk.get("content") or "").lower()
+        
+        score = 0.0
+        for word in query_words:
+            if word in symbol_name:
+                score += 50.0
+            if word in file_path:
+                score += 30.0
+            if len(word) > 3 and word in code_content:
+                score += 10.0
+                
+        return min(100.0, score)
+
+    def compute_historical_score(self, file_path: str, committed_files: List[str]) -> float:
+        if not file_path or not committed_files:
+            return 0.0
+        count = committed_files.count(file_path)
+        if count > 0:
+            return min(100.0, 50.0 + count * 10.0)
+        return 0.0
 

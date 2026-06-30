@@ -200,15 +200,10 @@ class Executor:
         )
 
         # Semantic retrieval
-        self.retriever = CodeRetriever(
-            repo_root=file_manager.root
-        )
-
-        self.retrieval_pipeline = (
-            RetrievalPipeline(
-                self.retriever
-            )
-        )
+        from retrieval.service import RetrievalFacade
+        self.retrieval_facade = RetrievalFacade()
+        self.retriever = self.retrieval_facade.retriever
+        self.retrieval_pipeline = self.retrieval_facade.pipeline
 
         self.validator = (
             ExecutionValidator()
@@ -713,7 +708,10 @@ class Executor:
 
         elif tool == "run_backend_tests":
 
-            return self.tests.run_backend_tests()
+            return self.tests.run_backend_tests(
+                test_filter=args.get("test_filter") or args.get("symbol"),
+                touched_files=args.get("touched_files") or ([args.get("path")] if args.get("path") else [])
+            )
 
         elif tool == "run_frontend_tests":
 

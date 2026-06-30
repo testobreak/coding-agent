@@ -503,13 +503,13 @@ class PlanCompiler:
         """DEPRECATED: Legacy action bridge."""
         actions = []
         from planning.action_types import (
-            MODIFY, RUN_FRONTEND_BUILD, RUN_BACKEND_TESTS, GIT_DIFF, ANALYZE, REPAIR
+            REPLACE_SPAN, INSERT_AFTER, DELETE_SPAN, RUN_FRONTEND_BUILD, RUN_BACKEND_TESTS, GIT_DIFF, ANALYZE, REPAIR
         )
         
         type_mapping = {
-            TaskType.MODIFY_SYMBOL: MODIFY,
-            TaskType.CREATE_SYMBOL: MODIFY,
-            TaskType.DELETE_SYMBOL: MODIFY,
+            TaskType.MODIFY_SYMBOL: REPLACE_SPAN,
+            TaskType.CREATE_SYMBOL: INSERT_AFTER,
+            TaskType.DELETE_SYMBOL: DELETE_SPAN,
             TaskType.VERIFY_BUILD: RUN_FRONTEND_BUILD,
             TaskType.RUN_TEST: RUN_BACKEND_TESTS,
             TaskType.VERIFY_CHANGES: GIT_DIFF,
@@ -520,7 +520,7 @@ class PlanCompiler:
         
         for task in plan.tasks:
             file_path = getattr(plan, "_target_file", None)
-            action_type = type_mapping.get(task.type, MODIFY)
+            action_type = type_mapping.get(task.type, REPLACE_SPAN)
             
             actions.append(Action(
                 action_type=action_type,

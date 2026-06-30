@@ -14,6 +14,8 @@ class ClassSymbol:
     line_end:   int
     parent:     Optional[str] = None   # outer class name (for nested classes)
     signature:  str = ""
+    start_byte: Optional[int] = None
+    end_byte:   Optional[int] = None
 
 
 @dataclass
@@ -23,6 +25,8 @@ class MethodSymbol:
     line_end:   int
     parent:     Optional[str] = None   # enclosing class name
     signature:  str = ""
+    start_byte: Optional[int] = None
+    end_byte:   Optional[int] = None
 
 
 @dataclass
@@ -31,6 +35,8 @@ class InterfaceSymbol:
     line_start: int
     line_end:   int
     signature:  str = ""
+    start_byte: Optional[int] = None
+    end_byte:   Optional[int] = None
 
 
 @dataclass
@@ -39,6 +45,8 @@ class EnumSymbol:
     line_start: int
     line_end:   int
     signature:  str = ""
+    start_byte: Optional[int] = None
+    end_byte:   Optional[int] = None
 
 
 @dataclass

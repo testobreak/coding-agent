@@ -22,13 +22,89 @@ class OllamaClient:
         self.model = model
 
         self.host = host.rstrip("/")
+        from inference.router import ModelRouter
+        self.router = ModelRouter(host=self.host, default_model=self.model)
+
+    def speculative_chat(
+        self,
+        messages,
+        task_type=None,
+        on_progress=None,
+        *args,
+        **kwargs
+    ):
+        """
+        Runs speculative decoding chat by resolving target and draft models.
+        """
+        target_model = self.model
+        if task_type is not None:
+            from inference.router import TaskType
+            if isinstance(task_type, TaskType):
+                target_model = self.router.route(task_type)
+
+        from inference.router import TaskType
+        draft_model = self.router.route(TaskType.RETRIEVAL)
+
+        if target_model == draft_model:
+            return self.chat(messages, task_type=task_type, *args, **kwargs)
+
+        target_client = OllamaClient(model=target_model, host=self.host)
+        draft_client = OllamaClient(model=draft_model, host=self.host)
+
+        from inference.speculative import SpeculativeDecoder
+        decoder = SpeculativeDecoder(target_client=target_client, draft_client=draft_client)
+
+        prompt = messages[-1]["content"] if messages else ""
+        context = ""
+        if len(messages) > 1:
+            context = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages[:-1]])
+
+        return decoder.generate_speculative_line(prompt=prompt, context=context, on_progress=on_progress)
 
     def chat(
         self,
-        messages
+        messages,
+        task_type=None,
+        stream=False,
+        *args,
+        **kwargs
     ):
 
+        model_to_use = self.model
+        if task_type is not None:
+            from inference.router import TaskType
+            if isinstance(task_type, TaskType):
+                model_to_use = self.router.route(task_type)
+
         try:
+            if stream:
+                response = requests.post(
+                    f"{self.host}/api/chat",
+                    json={
+                        "model":
+                            model_to_use,
+                        "messages":
+                            messages,
+                        "stream":
+                            True
+                    },
+                    stream=True,
+                    timeout=self.DEFAULT_TIMEOUT
+                )
+                response.raise_for_status()
+
+                def token_generator():
+                    import json
+                    for line in response.iter_lines():
+                        if line:
+                            try:
+                                chunk = json.loads(line.decode('utf-8'))
+                                content = chunk.get("message", {}).get("content", "")
+                                if content:
+                                    yield content
+                            except Exception:
+                                pass
+                return token_generator()
 
             response = requests.post(
 
@@ -37,7 +113,7 @@ class OllamaClient:
                 json={
 
                     "model":
-                        self.model,
+                        model_to_use,
 
                     "messages":
                         messages,

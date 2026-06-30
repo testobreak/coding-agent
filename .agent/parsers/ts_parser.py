@@ -51,6 +51,11 @@ class TypeScriptParser:
     # TREE WALK
     # =========================================================
 
+    def _decl_node(self, node):
+        if node.parent and node.parent.type == "export_statement":
+            return node.parent
+        return node
+
     def _walk(self, node, src: bytes, result: ParsedFile, parent_class: str):
         t = node.type
 
@@ -68,12 +73,15 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 result.classes.append(ClassSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     parent=parent_class,
                     signature=f"class {name}",
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 ))
                 body = node.child_by_field_name("body")
                 if body:
@@ -86,11 +94,14 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 result.interfaces.append(InterfaceSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     signature=f"interface {name}",
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 ))
                 # Recurse into interface body for method signatures
                 body = node.child_by_field_name("body")
@@ -104,11 +115,14 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 result.enums.append(EnumSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     signature=f"enum {name}",
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 ))
             return
 
@@ -117,12 +131,15 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 result.classes.append(ClassSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     parent=parent_class,
                     signature=f"type {name}",
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 ))
             return
 
@@ -131,12 +148,15 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 result.methods.append(MethodSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     parent=parent_class,
                     signature=f"{parent_class}.{name}" if parent_class else name,
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 ))
             return
 
@@ -145,12 +165,15 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 result.methods.append(MethodSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     parent=parent_class,
                     signature=node_text(node, src).strip(),
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 ))
             return
 
@@ -159,12 +182,15 @@ class TypeScriptParser:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = node_text(name_node, src)
+                decl = self._decl_node(node)
                 sym = MethodSymbol(
                     name=name,
-                    line_start=node.start_point[0] + 1,
-                    line_end=node.end_point[0] + 1,
+                    line_start=decl.start_point[0] + 1,
+                    line_end=decl.end_point[0] + 1,
                     parent=parent_class,
                     signature=f"function {name}",
+                    start_byte=decl.start_byte,
+                    end_byte=decl.end_byte,
                 )
                 if parent_class:
                     result.methods.append(sym)
@@ -202,12 +228,15 @@ class TypeScriptParser:
             if value.type not in ("arrow_function", "function", "function_expression"):
                 continue
             name = node_text(name_node, src)
+            decl = self._decl_node(node)
             sym = MethodSymbol(
                 name=name,
-                line_start=declarator.start_point[0] + 1,
-                line_end=declarator.end_point[0] + 1,
+                line_start=decl.start_point[0] + 1,
+                line_end=decl.end_point[0] + 1,
                 parent=parent_class,
                 signature=f"const {name} = {value.type}",
+                start_byte=decl.start_byte,
+                end_byte=decl.end_byte,
             )
             if parent_class:
                 result.methods.append(sym)

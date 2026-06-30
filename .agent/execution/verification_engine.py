@@ -36,7 +36,7 @@ class VerificationEngine:
         self.impact_analyzer = impact_analyzer
         
         from editing.symbol_resolver import SymbolResolver
-        self.resolver = SymbolResolver()
+        self.resolver = SymbolResolver(state_manager=state_manager)
         
         self.java_parser = MavenFailureParser()
         self.ts_parser = TypeScriptFailureParser()
@@ -97,7 +97,10 @@ class VerificationEngine:
                 if not os.path.exists(resolved):
                     continue
                 try:
-                    self.compile_validator.validate(resolved)
+                    from core.validation_mode import ValidationState
+                    v_state = self.compile_validator.validate(resolved)
+                    if v_state in (ValidationState.FAILED, ValidationState.UNAVAILABLE):
+                        raise RuntimeError(f"Compile check returned state: {v_state.name}")
                 except Exception as e:
                     build_res.success = False
                     print(f"[VerificationEngine] Compile check failed for {f}: {e}")

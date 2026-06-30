@@ -19,7 +19,7 @@ import faiss
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple
 
-LEVEL_NAMES = {0: "repo", 1: "file", 2: "class", 3: "method", 4: "chunk"}
+LEVEL_NAMES = {0: "repo_anchor", 1: "repo", 2: "file", 3: "symbol", 4: "chunk"}
 NUM_LEVELS = 5
 
 

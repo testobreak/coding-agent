@@ -34,19 +34,26 @@ class Replanner:
         state,
         retrieval_pipeline=None
     ):
+        # Enforce hard execution mode restriction: replanning/reflection is forbidden for non-AGENT modes
+        from core.execution_mode import ExecutionMode
+        from runtime.fast_path_router import FastPathRouter
+
+        mode = ExecutionMode.AGENT
+        try:
+            route_decision = FastPathRouter.route(state.goal)
+            mode = route_decision.execution_mode
+        except Exception:
+            pass
+
+        if mode != ExecutionMode.AGENT:
+            print(f"[Replanner] Non-AGENT execution mode detected ({mode}). Bypassing replanner.")
+            return []
 
         # Resolve retrieval pipeline
         if retrieval_pipeline is None:
             try:
-                from retrieval.retriever import CodeRetriever
-                from retrieval.retrieval_pipeline import RetrievalPipeline
-                import os
-                # Find repo root
-                repo_root = os.getcwd()
-                if not os.path.exists(os.path.join(repo_root, ".git")):
-                    repo_root = os.path.dirname(repo_root)
-                retriever = CodeRetriever(repo_root=repo_root)
-                retrieval_pipeline = RetrievalPipeline(retriever)
+                from retrieval.service import RetrievalFacade
+                retrieval_pipeline = RetrievalFacade().pipeline
             except Exception as e:
                 print(f"[Replanner] Warning: Failed to initialize fallback retrieval pipeline: {e}")
 
