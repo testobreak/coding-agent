@@ -1,5 +1,6 @@
 from pathlib import Path
 from repository_intelligence.models.symbol import Symbol, SymbolRelationship
+from repository_intelligence.retrieval.symbol_graph import SymbolGraph
 from repository_intelligence.models.file import File
 
 
@@ -27,6 +28,12 @@ class SymbolResolver:
         target_name = target_name.strip()
 
         candidates_dict = {}
+        # SymbolGraph integration: pull related symbols from graph based on source file context
+        if source_file:
+            graph = SymbolGraph(session)
+            graph_related = graph.related_symbols_for_file(source_file.id, max_depth=2)
+            for sym in graph_related:
+                candidates_dict[sym.id] = sym
 
         # 1. Exact Qualified Name Match
         eq_matches = (

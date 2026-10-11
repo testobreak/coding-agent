@@ -71,6 +71,20 @@ class StatePersistence:
 
         payload = asdict(state)
 
+        # ── Decouple Ephemeral/Large Fields from control-plane state ──────
+        EPHEMERAL_FIELDS = {
+            "retrieved_chunks",
+            "tool_outputs",
+            "reflections",
+            "execution_history",
+            "validation_results",
+            "repair_history",
+            "generated_code",
+            "git_diff"
+        }
+        for f in EPHEMERAL_FIELDS:
+            payload.pop(f, None)
+
         payload["_version"] = (
             self.VERSION
         )

@@ -44,11 +44,11 @@ class MavenFailureParser:
     )
 
     # Matches test class header line in surefire output:
-    # "Running com.acme.hrms.employee.service.EmployeeServiceTest"
+    # "Running com.acme.app.employee.service.EmployeeServiceTest"
     _TEST_CLASS_RE = re.compile(r"Running\s+([\w.]+)")
 
     # Matches individual failure block header:
-    # "--- FAILURE: testGetEmployee(com.acme.hrms.employee.service.EmployeeServiceTest)"
+    # "--- FAILURE: testGetEmployee(com.acme.app.employee.service.EmployeeServiceTest)"
     _FAILURE_HEADER_RE = re.compile(
         r"(?:FAILURE|ERROR)[:\s]+([\w<>]+)\(([\w.]+)\)"
     )
@@ -56,7 +56,7 @@ class MavenFailureParser:
     # Matches exception type on its own line, e.g. "java.lang.NullPointerException: ..."
     _EXCEPTION_RE = re.compile(r"^\s*([\w.]+Exception|[\w.]+Error):\s*(.*)")
 
-    # Matches stack frame like "at com.acme.hrms.employee.service.EmployeeService.getById(EmployeeService.java:42)"
+    # Matches stack frame like "at com.acme.app.employee.service.EmployeeService.getById(EmployeeService.java:42)"
     _STACK_FRAME_RE = re.compile(
         r"at\s+([\w.$]+)\.([\w$<>]+)\(([\w]+\.java):(\d+)\)"
     )

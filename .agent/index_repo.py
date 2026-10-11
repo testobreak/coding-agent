@@ -12,8 +12,8 @@
 #
 # Environment overrides (optional):
 #   AGENT_DB_PASS=admin
-#   AGENT_REPO_ROOT=d:\HRMS
-#   AGENT_REPO_NAME=HRMS
+#   AGENT_REPO_ROOT=/path/to/project
+#   AGENT_REPO_NAME=coding-agent
 #
 
 import sys
@@ -26,8 +26,8 @@ from indexing.symbol_indexer import SymbolIndexer
 from db.connection import get_conn
 
 # ── Configuration ─────────────────────────────────────────────
-REPO_ROOT = os.getenv("AGENT_REPO_ROOT", r"d:\HRMS")
-REPO_NAME = os.getenv("AGENT_REPO_NAME", "HRMS")
+REPO_ROOT = os.getenv("AGENT_REPO_ROOT", os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+REPO_NAME = os.getenv("AGENT_REPO_NAME", "coding-agent")
 
 
 def main():

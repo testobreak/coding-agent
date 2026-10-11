@@ -24,7 +24,8 @@ class SymbolEditor:
         test_runner,
         impact_analyzer,
         retrieval_pipeline,
-        llm=None
+        llm=None,
+        capabilities=None
     ):
         self.file_manager = file_manager
         self.state_manager = state_manager
@@ -34,6 +35,7 @@ class SymbolEditor:
         self.tests = test_runner
         self.impact_analyzer = impact_analyzer
         self.retrieval_pipeline = retrieval_pipeline
+        self.capabilities = capabilities
         
         self.resolver = SymbolResolver()
         self.ast_locator = ASTLocator()
@@ -162,7 +164,7 @@ class SymbolEditor:
             patch_block=patch_str
         )
 
-    def apply_patch(self, patch: Patch) -> bool:
+    def apply_patch(self, patch: Patch, strategy=None, user_override: bool = False) -> bool:
         """
         Applies a Patch, runs syntax, compilation, and test suite validations,
         and commits or rolls back changes inside a transaction boundary.
@@ -194,6 +196,17 @@ class SymbolEditor:
                     if len(parts) == 2:
                         before_git_paths.add(os.path.normpath(parts[1]))
 
+        # Resolve strategy validation flags
+        run_syntax = True
+        run_compile = True
+        run_tests_check = True
+        if strategy is not None:
+            run_syntax = getattr(strategy, "validate_syntax", True)
+            run_compile = getattr(strategy, "validate_compile", True)
+            run_tests_check = getattr(strategy, "run_tests", True)
+
+        import time
+        start_val = time.time()
         success = False
         try:
             # 1. Apply patch content and write to disk
@@ -202,44 +215,59 @@ class SymbolEditor:
             tx.modified_files.append(patch.file_path)
             tx.save_to_db()
             
-            # 2. Syntax validation
-            print(f"[SymbolEditor] Validating file syntax...")
-            try:
-                self.validator.validate_file_syntax(resolved_file_path)
-            except Exception as e:
-                raise RuntimeError(f"Syntax validation failed: {e}")
-            if hasattr(self.state_manager, "increment_validations"):
-                self.state_manager.increment_validations()
+            # 2. Syntax validation (Stage 1)
+            if run_syntax:
+                print(f"[SymbolEditor] Running Stage 1: Validating file syntax...")
+                try:
+                    self.validator.validate_file_syntax(resolved_file_path)
+                except Exception as e:
+                    raise RuntimeError(f"Stage 1 (Syntax) validation failed: {e}")
+                if hasattr(self.state_manager, "increment_validations"):
+                    self.state_manager.increment_validations()
+            else:
+                print(f"[SymbolEditor] Stage 1 (Syntax) skipped by strategy.")
             
-            # 3. Compile validation
-            print(f"[SymbolEditor] Validating compilation...")
-            try:
-                self.compile_validator.validate(resolved_file_path)
-            except Exception as e:
-                raise RuntimeError(f"Compilation validation failed: {e}")
+            # 3. Compile validation (Stage 2)
+            if run_compile:
+                print(f"[SymbolEditor] Running Stage 2: Validating compilation...")
+                try:
+                    from core.validation_mode import ValidationState
+                    v_state = self.compile_validator.validate(resolved_file_path)
+                    if v_state in (ValidationState.FAILED, ValidationState.UNAVAILABLE):
+                        raise RuntimeError(f"Compile check returned state: {v_state.name}")
+                except Exception as e:
+                    raise RuntimeError(f"Stage 2 (Compile) validation failed: {e}")
+            else:
+                print(f"[SymbolEditor] Stage 2 (Compile) skipped by strategy.")
             
-            # 4. Run tests
-            print(f"[SymbolEditor] Running test verification...")
-            test_filter = None
-            try:
-                dep_graph = getattr(self.retrieval_pipeline.retriever, "dependency_graph", None)
-                if dep_graph and dep_graph._built:
-                    self.impact_analyzer.graph = dep_graph
-                impact = self.impact_analyzer.analyze(patch.file_path)
-                test_filter = impact.get("test_filter")
-                if test_filter:
-                    print(f"[ImpactAnalyzer] Targeted tests: {test_filter}")
-            except Exception as e:
-                print(f"[ImpactAnalyzer] Dependency impact resolution skipped: {e}")
-                
-            test_result = self.tests.run_backend_tests(test_filter=test_filter)
-            if not test_result.get("success", False):
-                failures = test_result.get("failures", [])
-                if hasattr(self.state_manager, "add_test_failure"):
-                    for f in failures:
-                        self.state_manager.add_test_failure(f)
-                failure_summary = "; ".join([f"{f.get('error_type')}: {f.get('message')}" for f in failures[:3]]) or "Backend test failure"
-                raise RuntimeError(f"Test suite validation failed: {failure_summary}")
+            # 4. Run tests (Stage 3)
+            if run_tests_check:
+                print(f"[SymbolEditor] Running Stage 3: Running test verification...")
+                test_filter = None
+                try:
+                    dep_graph = getattr(self.retrieval_pipeline.retriever, "dependency_graph", None)
+                    if dep_graph and dep_graph._built:
+                        self.impact_analyzer.graph = dep_graph
+                    impact = self.impact_analyzer.analyze(patch.file_path)
+                    test_filter = impact.get("test_filter")
+                    if test_filter:
+                        print(f"[ImpactAnalyzer] Targeted tests: {test_filter}")
+                except Exception as e:
+                    print(f"[ImpactAnalyzer] Dependency impact resolution skipped: {e}")
+                    
+                test_result = self.tests.run_backend_tests(
+                    test_filter=test_filter,
+                    touched_files=[patch.file_path],
+                )
+                if not test_result.get("success", False):
+                    failures = test_result.get("failures", [])
+                    if hasattr(self.state_manager, "add_test_failure"):
+                        for f in failures:
+                            self.state_manager.add_test_failure(f)
+                    failure_summary = "; ".join([f"{f.get('error_type')}: {f.get('message')}" for f in failures[:3]]) or "Backend test failure"
+                    raise RuntimeError(f"Stage 3 (Tests) validation failed: {failure_summary}")
+            else:
+                print(f"[SymbolEditor] Stage 3 (Tests) skipped by strategy.")
                 
             # Enforce Patch Isolation (Fix #6)
             import subprocess
@@ -278,10 +306,67 @@ class SymbolEditor:
             tx.commit()
             success = True
             
+            # Emit validation_finished event on success
+            try:
+                from context.session_cache import SessionCache
+                from observability.event_bus import EventBus
+                from execution.validation_router import ValidationRouter
+                session = SessionCache.get_session("default")
+                req_id = session.task_id or "unknown"
+                
+                router = ValidationRouter()
+                impact = router.classify_impact([patch.file_path])
+                unnecessary = not (impact.get("run_backend", True) or impact.get("run_frontend", True))
+                
+                latency_ms = (time.time() - start_val) * 1000
+                stage = "tests" if run_tests_check else ("compile" if run_compile else "syntax")
+                
+                EventBus().emit(
+                    event_type="validation_finished",
+                    request_id=req_id,
+                    payload={
+                        "latency_ms": latency_ms,
+                        "stage": stage,
+                        "success": True,
+                        "unnecessary": unnecessary
+                    }
+                )
+            except Exception:
+                pass
+            
         except Exception as err:
             validation_error = str(err)
             print(f"[SymbolEditor] Validation failed, rolling back: {validation_error}")
             tx.rollback(reason=validation_error)
+            
+            # Emit validation_finished event on failure
+            try:
+                from context.session_cache import SessionCache
+                from observability.event_bus import EventBus
+                from execution.validation_router import ValidationRouter
+                session = SessionCache.get_session("default")
+                req_id = session.task_id or "unknown"
+                
+                router = ValidationRouter()
+                impact = router.classify_impact([patch.file_path])
+                unnecessary = not (impact.get("run_backend", True) or impact.get("run_frontend", True))
+                
+                latency_ms = (time.time() - start_val) * 1000
+                stage = "tests" if run_tests_check else ("compile" if run_compile else "syntax")
+                
+                EventBus().emit(
+                    event_type="validation_finished",
+                    request_id=req_id,
+                    payload={
+                        "latency_ms": latency_ms,
+                        "stage": stage,
+                        "success": False,
+                        "unnecessary": unnecessary
+                    }
+                )
+            except Exception:
+                pass
+                
             raise
             
         # Update metrics and memory state
@@ -295,13 +380,42 @@ class SymbolEditor:
             if hasattr(state, "generated_code"):
                 if state.generated_code is None:
                     state.generated_code = []
+                # Save full code payload to Artifact Store, saving only the artifact path reference in state
+                artifact_path = ""
+                try:
+                    from pathlib import Path
+                    artifact_name = f"generated_{len(state.generated_code)}_{Path(patch.file_path).name}"
+                    artifact_path = self.state_manager.artifact_store.write_artifact(
+                        self.state_manager.task_id or "default",
+                        artifact_name,
+                        patch.new_text
+                    )
+                except Exception as ae:
+                    print(f"[SymbolEditor] Failed to save code artifact: {ae}")
+
                 state.generated_code.append({
                     "path": patch.file_path,
-                    "content": patch.new_text
+                    "content": f"Artifact reference: {artifact_path}"
                 })
-            if hasattr(self.state_manager, "increment_modifications"):
-                self.state_manager.increment_modifications()
-            
+            # Emit patch_applied event
+            try:
+                from context.session_cache import SessionCache
+                from observability.event_bus import EventBus
+                session = SessionCache.get_session("default")
+                req_id = session.task_id or "unknown"
+                
+                EventBus().emit(
+                    event_type="patch_applied",
+                    request_id=req_id,
+                    payload={
+                        "file_path": patch.file_path,
+                        "success": success,
+                        "strategy": getattr(strategy, "name", "standard") if strategy else "standard"
+                    }
+                )
+            except Exception:
+                pass
+
         return success
 
     def modify(self, symbol_name: str, instruction: str, file_path: str = None, operation: str = "modify_symbol") -> dict:
@@ -311,18 +425,19 @@ class SymbolEditor:
         """
         print(f"[SymbolEditor] Decoupled modify flow ({operation}) for: {symbol_name}")
         
-        # 1. Resolve to SymbolHandle
-        handles = self.resolver.resolve(symbol_name, file_path=file_path)
-        if not handles:
-            raise RuntimeError(f"Symbol '{symbol_name}' could not be resolved to any file or database record.")
-            
-        symbol = handles[0]
-        
         success = False
         validation_error = None
         patch_str = ""
+        symbol = None
         
         try:
+            # 1. Resolve to SymbolHandle
+            handles = self.resolver.resolve(symbol_name, file_path=file_path)
+            if not handles:
+                raise RuntimeError(f"Symbol '{symbol_name}' could not be resolved to any file or database record.")
+                
+            symbol = handles[0]
+            
             if operation == "delete_symbol":
                 # Deterministic deletion without LLM
                 resolved_file_path = self.file_manager.resolve_path(symbol.file_path)
@@ -360,7 +475,7 @@ class SymbolEditor:
             
         result = {
             "success": success,
-            "path": symbol.file_path,
+            "path": symbol.file_path if symbol else (file_path or ""),
             "patch": patch_str
         }
         if validation_error:

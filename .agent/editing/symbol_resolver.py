@@ -38,7 +38,7 @@ class SymbolResolver:
                 print(f"[SymbolResolver] Failed to determine execution mode: {e}")
 
         # For PATCH mode, never fallback. Only allow fallback in AGENT mode.
-        from core.execution_mode import ExecutionMode
+        from core.execution_mode import TaskIntentMode as ExecutionMode
         if exec_mode is not None:
             if exec_mode != ExecutionMode.AGENT:
                 allow_fallback = False
@@ -63,8 +63,8 @@ class SymbolResolver:
             ))
             
         # Build fallback handle or raise exception if no symbols were resolved from database but file_path exists
-        if not handles and file_path:
-            full_path = os.path.abspath(os.path.join("/Users/ashish/Downloads/HRMS", file_path))
+            repo_root = getattr(self, "repo_root", None) or os.getcwd()
+            full_path = os.path.abspath(os.path.join(repo_root, file_path))
             if os.path.exists(full_path):
                 # Attempt to locate via dynamic AST parsing on the fly
                 from editing.ast_locator import ASTLocator

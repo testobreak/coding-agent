@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import List, Dict, Any, Union, Optional
 from retrieval.hybrid_ranker import HybridRanker
 from retrieval.feature_extractor import RetrievalContext
+from retrieval.corpus_filter import is_corpus_eligible
 
 class RetrievalPipeline:
 
@@ -28,17 +29,28 @@ class RetrievalPipeline:
             is_lexical_only = True
 
         candidates = []
+        query_lower_check = query.lower()
+        needs_tests = any(x in query_lower_check for x in ["test", "spec", "mock", "verify"])
+
         if is_lexical_only:
+            from retrieval.workspace_router import classify_workspace_target
+            target_roots = classify_workspace_target(query, context.active_file if context else None)
+            
             query_lower = query_clean.lower()
             for chunk in self.retriever.chunks:
-                f = (chunk.get("file") or "").lower()
-                if any(p in f for p in [".agent/", "repository_intelligence/", "venv/", "node_modules/", ".git/"]):
+                f = chunk.get("file") or ""
+                # ── Corpus hygiene: reject build artifacts / agent internals ──
+                if not is_corpus_eligible(f):
+                    continue
+                if target_roots and not any(f.startswith(r) for r in target_roots):
+                    continue
+                if not needs_tests and any(pat in f.lower() for pat in ["/tests/", "verify_", "mock", "_test.py"]):
                     continue
                 name = (chunk.get("name") or "").lower()
                 symbol = (chunk.get("symbol") or "").lower()
-                if query_lower == name or query_lower == symbol or query_lower in f:
+                if query_lower == name or query_lower == symbol or query_lower in f.lower():
                     candidates.append({"score": 100.0, "chunk": chunk})
-            
+
             from retrieval.ranker import SpecRanker
             reranked = SpecRanker.rerank_candidates(candidates, context=context)
             return [{"chunk": item["chunk"], "score": item["score"]} for item in reranked[:top_k]]
@@ -76,6 +88,25 @@ class RetrievalPipeline:
 
         # Fallback to Stage 1: Broad recall (Vector search gets candidate pool of top 100 chunks)
         candidates = self.retriever.search(query=query, top_k=100)
+
+        # ── Corpus hygiene: strip build artifacts / agent internals ──────────
+        # This is the safety net for any contaminated rows that slipped through
+        # the DB-level guard (e.g. rows indexed before corpus_filter was added).
+        candidates = [
+            c for c in candidates
+            if is_corpus_eligible(c["chunk"].get("file", ""))
+        ]
+
+        # Filter test/mock files unless query explicitly asks for them
+        if not needs_tests:
+            candidates = [
+                c for c in candidates
+                if not any(
+                    pat in (c["chunk"].get("file") or "").lower()
+                    for pat in ["/tests/", "verify_", "mock", "_test.py"]
+                )
+            ]
+
         if not candidates:
             return []
 

@@ -34,6 +34,7 @@ from repository_intelligence.models.repository import Repository
 from repository_intelligence.models.file import File
 from repository_intelligence.models.symbol import Symbol, SymbolRelationship
 from repository_intelligence.models.symbol import Test as DBTest
+from retrieval.symbol_graph_cache import SymbolGraphCache
 
 
 class RetrievalCandidate:
@@ -61,19 +62,28 @@ class HybridRanker:
     """
     Next-Level Enterprise Multi-Signal Retrieval Ranker.
     """
-    def __init__(self):
+    def __init__(self, cross_encoder=None):
         # Specific weights requested by the user
-        self.symbol_weight = 0.35
-        self.graph_weight = 0.20
-        self.embedding_weight = 0.15
-        self.path_weight = 0.10
-        self.impact_weight = 0.10
-        self.test_weight = 0.05
+        self.symbol_weight = 0.25
+        self.graph_weight = 0.10
+        self.embedding_weight = 0.45
+        self.path_weight = 0.15
+        self.impact_weight = 0.0
+        self.test_weight = 0.0
         self.historical_weight = 0.05
-        
-        # Instantiate local cross-encoder model
-        from retrieval.cross_encoder import CrossEncoderReranker
-        self.cross_encoder = CrossEncoderReranker()
+
+        # Accept injected cross-encoder (lazy-loaded via ModelService)
+        # If none provided, create one using legacy path (will load on first rerank call)
+        self._cross_encoder = cross_encoder
+
+    @property
+    def cross_encoder(self):
+        """Return injected cross-encoder or lazy-create a legacy one."""
+        if self._cross_encoder is None:
+            from retrieval.cross_encoder import CrossEncoderReranker
+            self._cross_encoder = CrossEncoderReranker()  # legacy path, lazy
+        return self._cross_encoder
+
 
     def extract_target_symbols(self, query: str) -> List[str]:
         """
@@ -82,7 +92,7 @@ class HybridRanker:
         """
         # CamelCase tokens (e.g. EmployeeService, EmployeeController)
         camel_case = re.findall(r'\b[A-Z][a-zA-Z0-9_]*\b', query)
-        # Dotted namespace paths (e.g. com.hrms.EmployeeService)
+        # Dotted namespace paths (e.g. com.example.EmployeeService)
         dotted = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_\.]*\.[A-Z][a-zA-Z0-9_]*\b', query)
         
         # Split CamelCase tokens into sub-words
@@ -103,6 +113,22 @@ class HybridRanker:
         """
         Ranks the candidates list using the 7-signal enterprise formula.
         """
+        if not candidates:
+            return []
+
+        # Filter ignore patterns unless query explicitly asks about tests/mocks/verification
+        query_lower = query.lower()
+        needs_tests = any(x in query_lower for x in ["test", "spec", "mock", "verify"])
+        if not needs_tests:
+            filtered_candidates = []
+            for item in candidates:
+                chunk = item.get("chunk", {})
+                f = (chunk.get("file") or "").lower()
+                if any(pat in f for pat in ["/tests/", "verify_", "mock", "_test.py"]):
+                    continue
+                filtered_candidates.append(item)
+            candidates = filtered_candidates
+
         if not candidates:
             return []
 
@@ -179,35 +205,41 @@ class HybridRanker:
             from retrieval.query_intent import RetrievalIntentClassifier, RetrievalIntent
             intent = RetrievalIntentClassifier.classify(query)
 
-            # Select weights dynamically based on query intent
+            # ── Structure-first weights (Cursor architecture) ───────────────
+            #
+            # Semantic reduced from 0.45 → 0.35 across all code-action intents.
+            # Reason: embeddings alone produce false positives when symbol and
+            # path scores are 0 but embedding score is 37-42 (confirmed in
+            # ranking diagnostics).  Symbol + path encode structural certainty
+            # that embeddings cannot.
+            #
+            # EXPLAIN keeps slightly higher semantic (0.40) because it is a
+            # natural-language task, not a surgical edit target.
+
             if intent == RetrievalIntent.MODIFY_SYMBOL or intent == RetrievalIntent.BUG_FIX:
-                w_semantic = 0.45
-                w_symbol = 0.25
-                w_lexical = 0.15
-                w_path = 0.10
-                w_graph = 0.00
-                w_history = 0.05
+                w_semantic = 0.35
+                w_symbol   = 0.30
+                w_path     = 0.20
+                w_graph    = 0.10
+                w_history  = 0.05
             elif intent == RetrievalIntent.REFACTOR:
-                w_semantic = 0.40
-                w_symbol = 0.20
-                w_lexical = 0.00
-                w_path = 0.10
-                w_graph = 0.20
-                w_history = 0.10
+                w_semantic = 0.35
+                w_symbol   = 0.30
+                w_path     = 0.20
+                w_graph    = 0.10
+                w_history  = 0.05
             elif intent == RetrievalIntent.EXPLAIN:
-                w_semantic = 0.60
-                w_symbol = 0.15
-                w_lexical = 0.15
-                w_path = 0.05
-                w_graph = 0.00
-                w_history = 0.05
-            else: # SEARCH / DEFAULT
-                w_semantic = 0.50
-                w_symbol = 0.20
-                w_lexical = 0.15
-                w_path = 0.10
-                w_graph = 0.00
-                w_history = 0.05
+                w_semantic = 0.40
+                w_symbol   = 0.25
+                w_path     = 0.20
+                w_graph    = 0.10
+                w_history  = 0.05
+            else:  # SEARCH / DEFAULT
+                w_semantic = 0.35
+                w_symbol   = 0.30
+                w_path     = 0.20
+                w_graph    = 0.10
+                w_history  = 0.05
 
             for item in candidates:
                 cand = RetrievalCandidate(item)
@@ -238,15 +270,13 @@ class HybridRanker:
                 impact = cand.impact_score / 100.0
                 test = cand.test_score / 100.0
 
-                # Compute final score using the 7-signal weights
+                # Compute final score using the intent-dynamic weights
                 cand.final_score = (
-                    symbol     * self.symbol_weight
-                    + graph      * self.graph_weight
-                    + semantic   * self.embedding_weight
-                    + path       * self.path_weight
-                    + impact     * self.impact_weight
-                    + test       * self.test_weight
-                    + history    * self.historical_weight
+                    semantic     * w_semantic
+                    + symbol     * w_symbol
+                    + path       * w_path
+                    + graph      * w_graph
+                    + history    * w_history
                 )
 
                 # Apply exact symbol match boost (Cursor-like boosting)
@@ -345,22 +375,32 @@ class HybridRanker:
 
         chunk_name = (chunk.get("name") or "").lower()
         chunk_symbol = (chunk.get("symbol") or "").lower()
+        symbol_fqn = (symbol.qualified_name.lower() if symbol else "").lower()
 
-        # First pass: Check all targets for exact match
+        # First pass: Check for exact match with target tokens
         for target in targets:
             target_lower = target.lower()
-            if chunk_name == target_lower or chunk_symbol == target_lower:
+            if chunk_name == target_lower or chunk_symbol == target_lower or (symbol and symbol.name.lower() == target_lower):
                 return 100.0
-            if symbol and (symbol.qualified_name.lower() == target_lower or symbol.name.lower() == target_lower):
+            if symbol_fqn == target_lower or symbol_fqn.endswith("." + target_lower):
                 return 100.0
-            
-        # Second pass: Check all targets for partial match
+
+        # Second pass: Check for target substring match (e.g. "employeeservice" is in "employeeserviceimpl")
         for target in targets:
             target_lower = target.lower()
-            if target_lower in chunk_name or target_lower in chunk_symbol:
-                return 50.0
-            if symbol and (target_lower in symbol.qualified_name.lower() or target_lower in symbol.name.lower()):
-                return 50.0
+            # Only allow substring match boost for full camel-case/longer target terms
+            if len(target_lower) >= 6:
+                if target_lower in chunk_name or target_lower in chunk_symbol or (symbol and target_lower in symbol.name.lower()):
+                    return 80.0
+                if symbol_fqn and target_lower in symbol_fqn:
+                    return 80.0
+
+        # Third pass: Generic sub-word matches (like "Employee" or "Service")
+        for target in targets:
+            target_lower = target.lower()
+            if len(target_lower) > 3:
+                if target_lower in chunk_name or target_lower in chunk_symbol or (symbol and target_lower in symbol.name.lower()):
+                    return 10.0  # low penalty boost for common subwords
 
         return 0.0
 
@@ -368,29 +408,30 @@ class HybridRanker:
         if not symbol or not targets:
             return 0.0
 
-        target_rows = session.query(Symbol.id).filter(
-            Symbol.qualified_name.in_(targets) | Symbol.name.in_(targets)
-        ).all()
-        target_ids = [r[0] for r in target_rows]
+        cache = SymbolGraphCache.get_instance()
+        cache.load(session=session)
 
-        if target_ids:
-            edge = session.query(SymbolRelationship.id).filter(
-                SymbolRelationship.repository_id == symbol.repository_id,
-                (
-                    (SymbolRelationship.source_symbol_id == symbol.id) & 
-                    (SymbolRelationship.target_symbol_id.in_(target_ids))
-                ) |
-                (
-                    (SymbolRelationship.source_symbol_id.in_(target_ids)) & 
-                    (SymbolRelationship.target_symbol_id == symbol.id)
-                )
-            ).first()
-            if edge:
-                return 100.0
+        # Resolve target IDs from in-memory index
+        target_ids = []
+        for t in targets:
+            sym = cache.get_symbol_by_qualified_name(t)
+            if sym:
+                target_ids.append(sym["id"])
+            else:
+                for sym in cache.get_symbols_by_name(t):
+                    target_ids.append(sym["id"])
+
+        if symbol and target_ids:
+            for rel in cache.relationships_by_source.get(str(symbol.id), []):
+                if rel["target_symbol_id"] in target_ids:
+                    return 100.0
+            for rel in cache.relationships_by_target.get(str(symbol.id), []):
+                if rel["source_symbol_id"] in target_ids:
+                    return 100.0
 
         # Fallback to normalized centrality density
-        inbound = session.query(SymbolRelationship.id).filter(SymbolRelationship.target_symbol_id == symbol.id).count()
-        outbound = session.query(SymbolRelationship.id).filter(SymbolRelationship.source_symbol_id == symbol.id).count()
+        inbound = len(cache.relationships_by_target.get(str(symbol.id), [])) if symbol else 0
+        outbound = len(cache.relationships_by_source.get(str(symbol.id), [])) if symbol else 0
         return min(100.0, (inbound + outbound) * 10.0)
 
     def compute_path_score(self, query: str, file_path: str) -> float:
@@ -420,52 +461,50 @@ class HybridRanker:
         if not targets:
             return 0.0
 
-        target_rows = session.query(Symbol.id).filter(
-            Symbol.qualified_name.in_(targets) | Symbol.name.in_(targets)
-        ).all()
-        target_ids = [r[0] for r in target_rows]
+        cache = SymbolGraphCache.get_instance()
+        cache.load(session=session)
+
+        # Resolve target IDs from in-memory index
+        target_ids = []
+        for t in targets:
+            sym = cache.get_symbol_by_qualified_name(t)
+            if sym:
+                target_ids.append(sym["id"])
+            else:
+                for sym in cache.get_symbols_by_name(t):
+                    target_ids.append(sym["id"])
 
         if not target_ids:
             return 0.0
 
         # Check if the candidate symbol is within 1st degree neighborhood of target
         if symbol:
-            related = session.query(SymbolRelationship.id).filter(
-                (SymbolRelationship.source_symbol_id == symbol.id) & (SymbolRelationship.target_symbol_id.in_(target_ids)) |
-                (SymbolRelationship.source_symbol_id.in_(target_ids)) & (SymbolRelationship.target_symbol_id == symbol.id)
-            ).first()
-            if related:
-                return 100.0
+            for rel in cache.relationships_by_source.get(str(symbol.id), []):
+                if rel["target_symbol_id"] in target_ids:
+                    return 100.0
+            for rel in cache.relationships_by_target.get(str(symbol.id), []):
+                if rel["source_symbol_id"] in target_ids:
+                    return 100.0
 
         # Check if the candidate file matches target file relationships
         if file_row:
-            target_files = session.query(Symbol.file_id).filter(Symbol.id.in_(target_ids)).all()
-            target_file_ids = [r[0] for r in target_files if r[0]]
-            if target_file_ids:
-                # Direct relationships from candidate's file to target files (outbound)
-                related_out = session.query(SymbolRelationship.id).join(
-                    Symbol, SymbolRelationship.target_symbol_id == Symbol.id
-                ).filter(
-                    SymbolRelationship.source_file_id == file_row.id,
-                    Symbol.file_id.in_(target_file_ids)
-                ).first()
-                if related_out:
-                    return 100.0
+            target_file_paths = set()
+            for tid in target_ids:
+                tsym = cache.get_symbol_by_id(tid)
+                if tsym and tsym.get("file_path"):
+                    target_file_paths.add(tsym["file_path"])
 
-                # Direct relationships from target files to candidate's file (inbound)
-                related_in = session.query(SymbolRelationship.id).join(
-                    Symbol, SymbolRelationship.target_symbol_id == Symbol.id
-                ).filter(
-                    SymbolRelationship.source_file_id.in_(target_file_ids),
-                    Symbol.file_id == file_row.id
-                ).first()
-                if related_in:
-                    return 100.0
+            file_id = cache.files_by_path.get(file_row.path)
+            if file_id and target_file_paths:
+                for rel in cache.relationships_by_file.get(file_id, []):
+                    if rel["target_symbol_id"]:
+                        tsym = cache.get_symbol_by_id(rel["target_symbol_id"])
+                        if tsym and tsym.get("file_path") in target_file_paths:
+                            return 100.0
 
         return 0.0
 
     def compute_test_score(self, session, symbol: Symbol | None, file_row: File | None, targets: List[str]) -> float:
-        # Check if file path represents a test class
         fpath = (file_row.path if file_row else "").lower()
         is_test_file = "test" in fpath or "spec" in fpath
 
@@ -474,32 +513,29 @@ class HybridRanker:
 
         if file_row:
             try:
-                # 1. Check if the candidate file is a test for one of our target symbols
-                target_symbol_ids = session.query(Symbol.id).filter(
-                    Symbol.qualified_name.in_(targets) | Symbol.name.in_(targets)
-                ).all()
-                target_symbol_ids = [r[0] for r in target_symbol_ids]
+                cache = SymbolGraphCache.get_instance()
+                cache.load(session=session)
+
+                target_symbol_ids = []
+                for t in targets:
+                    sym = cache.get_symbol_by_qualified_name(t)
+                    if sym:
+                        target_symbol_ids.append(sym["id"])
+                    else:
+                        for sym in cache.get_symbols_by_name(t):
+                            target_symbol_ids.append(sym["id"])
 
                 if target_symbol_ids:
-                    test_for_target = session.query(DBTest.id).filter(
-                        DBTest.file_id == file_row.id,
-                        DBTest.target_symbol_id.in_(target_symbol_ids)
-                    ).first()
-                    if test_for_target:
-                        return 100.0
+                    file_id = cache.files_by_path.get(file_row.path)
+                    if file_id:
+                        for test_rec in cache.tests_by_file.get(file_id, []):
+                            if test_rec.get("target_symbol_id") in target_symbol_ids:
+                                return 100.0
 
-                # 2. Check if there is any test pointing to a symbol in this candidate file
-                candidate_symbol_ids = session.query(Symbol.id).filter(
-                    Symbol.file_id == file_row.id
-                ).all()
-                candidate_symbol_ids = [r[0] for r in candidate_symbol_ids]
-
-                if candidate_symbol_ids:
-                    has_test = session.query(DBTest.id).filter(
-                        DBTest.target_symbol_id.in_(candidate_symbol_ids)
-                    ).first()
-                    if has_test:
-                        return 100.0
+                        for sym_data in cache.symbols_by_id.values():
+                            if sym_data.get("file_path") == file_row.path:
+                                if sym_data["id"] in cache.tests_by_symbol:
+                                    return 100.0
             except Exception as e:
                 print(f"[HybridRanker] Test score computation exception: {e}")
 

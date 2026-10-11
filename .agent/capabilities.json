@@ -1,0 +1,15 @@
+{
+  "java": {
+    "maven": "/Users/ashish/Downloads/apache-maven-3.9.9/bin/mvn",
+    "java": "/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home/bin/java",
+    "version": "Apache Maven 3.9.9 (8e8579a9e76f7d015ee5ec7bfcdc97d260186937)\nMaven home: /Users/ashish/Downloads/apache-maven-3.9.9\nJava version: 21.0.6, vendor: Oracle Corporation, runtime: /Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home\nDefault locale: en_IN, platform encoding: UTF-8\nOS name: \"mac os x\", version: \"15.3.2\", arch: \"aarch64\", family: \"mac\""
+  },
+  "node": {
+    "npm": "/usr/local/bin/npm",
+    "version": "11.6.1"
+  },
+  "python": {
+    "python": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+    "version": "Python 3.13.3"
+  }
+}

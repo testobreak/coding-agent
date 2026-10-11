@@ -38,6 +38,18 @@ class TaskState:
 
     session_id: Optional[str] = None
 
+    # ── Repository Snapshot Isolation ──────────────────────────────────────
+    # The snapshot_id pins this task to the specific repository state it was
+    # created or last resumed against. On task resume, StateManager compares
+    # this field against the current repo snapshot and selectively invalidates
+    # ephemeral fields (retrieved_chunks, active_symbols, etc.) if they differ.
+    #
+    # Rule: goal, current_plan, and modification_targets survive snapshot
+    # changes; all other derived/ephemeral intelligence is cleared.
+
+    snapshot_id: str = ""                                # sha256 of git_head + dirty_hash
+    dirty_files_at_creation: List[str] = field(default_factory=list)  # in-flight files at creation
+
     created_at: str = field(
         default_factory=lambda:
         datetime.utcnow().isoformat()
@@ -190,6 +202,9 @@ class TaskState:
 
     execution_state: str = "PLANNING"
 
+    plan_type: str = "direct"  # Set to "direct", "linear", or "dag"
+    plan_payload: Optional[Dict[str, Any]] = None
+
     # =====================================================
     # METADATA
     # =====================================================
@@ -197,6 +212,12 @@ class TaskState:
     metadata: Dict[str, Any] = field(
         default_factory=dict
     )
+
+    # Confidence of last LLM output (used for gating reflection/replan)
+    last_confidence: float = 0.0
+
+    # Reflection Budget (Fix 4)
+    reflection_budget: int = 2
 
     # =====================================================
     @property

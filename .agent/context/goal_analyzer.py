@@ -10,14 +10,14 @@ class GoalAnalyzer:
         goal_lower = goal.lower()
         
         # Determine action
-        if any(w in goal_lower for w in ["fix", "bug", "error", "issue", "broken", "failure", "repair", "crash"]):
+        if any(w in goal_lower for w in ["analyze", "analyse", "explain", "understand", "review", "summary", "summarize", "inspect", "check", "show", "view", "read", "find"]):
+            action = "analyze"
+        elif any(w in goal_lower for w in ["fix", "bug", "error", "issue", "broken", "failure", "repair", "crash"]):
             action = "modify"
         elif any(w in goal_lower for w in ["refactor", "cleanup", "optimize", "improve"]):
             action = "refactor"
         elif any(w in goal_lower for w in ["add", "implement", "create", "feature", "build", "logging"]):
             action = "add_feature"
-        elif any(w in goal_lower for w in ["analyze", "explain", "understand", "review", "summary", "summarize"]):
-            action = "analyze"
         else:
             action = "unknown"
 

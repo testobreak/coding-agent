@@ -2,98 +2,61 @@
 
 import os
 import time
-import pickle
-import faiss
+import threading
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
-from retrieval.chunker import (
-    RepoChunker
-)
-
-from retrieval.embedding_engine import (
-    EmbeddingEngine
-)
-
-from retrieval.hierarchy.hierarchical_index import (
-    HierarchicalIndex
-)
-
-from retrieval.faiss_store import (
-    FaissVectorStore
-)
-
+from retrieval.embedding_engine import EmbeddingEngine
 from retrieval.bm25_index import BM25Index
 from retrieval.symbol_index import SymbolIndex
 from retrieval.cross_encoder import CrossEncoderReranker
 from retrieval.candidate_pipeline import CandidatePipeline
+from retrieval.pgvector_backend import PgVectorBackend
 
-
-INDEX_DIR = ".cache"
-
-INDEX_FILE = os.path.join(
-    INDEX_DIR,
-    "code_index.faiss"
-)
-
-CHUNKS_FILE = os.path.join(
-    INDEX_DIR,
-    "chunks.pkl"
-)
+if TYPE_CHECKING:
+    from models.model_service import ModelService
 
 
 class CodeRetriever:
 
     def __init__(
         self,
-        repo_root="."
+        repo_root=".",
+        model_service: "ModelService" = None
     ):
-
         self.repo_root = repo_root
+        self._index_ready = threading.Event()
+        self._model_service = model_service  # kept for RepositoryService injection
 
-        os.makedirs(
-            INDEX_DIR,
-            exist_ok=True
-        )
-
-        self.chunker = RepoChunker()
-
-        self.embedding_engine = (
-            EmbeddingEngine()
-        )
+        # Use injected ModelService — no model loading here
+        self.embedding_engine = EmbeddingEngine(model_service=model_service)
 
         self.chunks = []
-
-        self.vector_store = None
         self.bm25_index = BM25Index()
         self.symbol_index = SymbolIndex()
-        self.cross_encoder = CrossEncoderReranker()
-        self.candidate_pipeline = None
 
-        self.hierarchical_index = HierarchicalIndex(self.embedding_engine)
-
-        print(
-            "\n[Retriever] Initializing"
+        # Cross-encoder: injected via service (lazy — no startup cost)
+        self.cross_encoder = CrossEncoderReranker(model_service=model_service)
+        
+        # Initialize pgvector HNSW ANN backend
+        self.pgvector_backend = PgVectorBackend()
+        
+        self.candidate_pipeline = CandidatePipeline(
+            ann_backend=self.pgvector_backend,
+            bm25_index=self.bm25_index,
+            symbol_index=self.symbol_index,
+            cross_encoder=self.cross_encoder
         )
 
-        if self.cache_exists():
-
-            try:
-
-                self.load_cache()
-
-            except Exception as e:
-
-                print(
-                    f"[Retriever] "
-                    f"Cache load failed: {e}"
-                )
-
-                self.build_index()
-
-        else:
-
-            self.build_index()
-
+        print("\n[Retriever] Initializing")
         self.get_project_metadata()
+
+        # Launch indexing in background so startup is non-blocking
+        index_thread = threading.Thread(
+            target=self._background_index,
+            name="retriever-indexer",
+            daemon=True
+        )
+        index_thread.start()
 
     def get_project_metadata(self):
         import json
@@ -139,173 +102,113 @@ class CodeRetriever:
             except Exception:
                 pass
 
-    # =====================================================
-    # CACHE
-    # =====================================================
+    def _background_index(self):
+        """Run in a daemon thread: skip full scan if already indexed, else run incremental."""
+        try:
+            from repository_intelligence.db.connection import SessionLocal
+            from repository_intelligence.models.symbol import Symbol
+            from repository_intelligence.models.file import File
 
-    def cache_exists(self):
-        return (
-            os.path.exists(".cache/vector_store.index")
-            and
-            os.path.exists(".cache/vector_store.meta")
-            and
-            os.path.exists(".cache/hier_level_1.faiss")
-        )
+            session = SessionLocal()
+            try:
+                existing_count = session.query(Symbol).count()
+            finally:
+                session.close()
+
+            if existing_count > 0:
+                # Already indexed — just load chunks from DB into memory
+                print(f"[Retriever] DB has {existing_count} symbols — skipping full scan, loading from DB...")
+                self._load_chunks_from_db()
+                self._index_ready.set()
+                # Run incremental scan silently in background to catch any changes
+                self._incremental_scan_background()
+            else:
+                # First run — must do full index
+                self.build_index()
+                self._index_ready.set()
+        except Exception as e:
+            print(f"[Retriever] Background indexing error: {e}")
+            self._index_ready.set()  # unblock searches even if indexing failed
+
+    def _incremental_scan_background(self):
+        """Silently run incremental scan to pick up any changed files."""
+        try:
+            from repository_intelligence.services.repository_service import RepositoryService
+            RepositoryService(model_service=self._model_service).scan_repository(self.repo_root)
+            # Reload chunks after incremental update
+            self._load_chunks_from_db()
+            print("[Retriever] Background incremental scan complete.")
+        except Exception as e:
+            print(f"[Retriever] Background incremental scan warning: {e}")
+
+    def _load_chunks_from_db(self):
+        """Load symbol chunks from DB into memory for BM25 and symbol index."""
+        from repository_intelligence.db.connection import SessionLocal
+        from repository_intelligence.models.symbol import Symbol
+        from repository_intelligence.models.file import File
+        from retrieval.corpus_filter import is_corpus_eligible
+
+        session = SessionLocal()
+        skipped = 0
+        try:
+            db_symbols = session.query(Symbol).join(File, Symbol.file_id == File.id).all()
+            self.chunks = []
+            for sym in db_symbols:
+                file_path = sym.file.path if sym.file else ""
+
+                # ── Corpus hygiene guard ────────────────────────────────────
+                # Reject build artifacts, agent internals, generated files, etc.
+                if not is_corpus_eligible(file_path):
+                    skipped += 1
+                    continue
+
+                self.chunks.append({
+                    "chunk_id": f"db:symbol:{sym.id}",
+                    "name": sym.name,
+                    "symbol": sym.qualified_name,
+                    "type": sym.symbol_type or "ClassDef",
+                    "file": file_path,
+                    "start_line": sym.start_line,
+                    "end_line": sym.end_line,
+                    "code": sym.signature or "",
+                    "docstring": ""
+                })
+            self.bm25_index.build(self.chunks)
+            self.symbol_index.build(self.chunks)
+            print(
+                f"[Retriever] Loaded {len(self.chunks)} chunks from DB "
+                f"({skipped} ineligible paths skipped)."
+            )
+        finally:
+            session.close()
+
 
     # =====================================================
     # INDEX BUILD
     # =====================================================
 
     def build_index(self):
-
         start = time.time()
+        print("[Retriever] Scanning and indexing repository to PostgreSQL...")
 
-        print(
-            "[Retriever] Building chunks"
-        )
+        # Stage 1: Incremental repository scan + embedding
+        t0 = time.time()
+        from repository_intelligence.services.repository_service import RepositoryService
+        try:
+            result = RepositoryService(model_service=self._model_service).scan_repository(self.repo_root)
+            changed = result.get("changed_files", 0)
+            scanned = result.get("scanned_files", 0)
+            print(f"[Retriever] Scan complete: {scanned} scanned, {changed} changed files ({time.time() - t0:.2f}s)")
+        except Exception as e:
+            print(f"[Retriever Error] Database indexing scan failed: {e}")
+            raise e
 
-        self.chunks = (
-            self.chunker.build_chunks(
-                self.repo_root
-            )
-        )
+        # Stage 2: Load chunks into memory (BM25 + symbol index)
+        t1 = time.time()
+        self._load_chunks_from_db()
+        print(f"[Retriever] In-memory index built in {time.time() - t1:.2f}s")
 
-        if not self.chunks:
-
-            raise RuntimeError(
-                "No chunks generated."
-            )
-
-        texts = [
-
-            self.build_search_text(chunk)
-
-            for chunk in self.chunks
-        ]
-
-        print(
-            "[Retriever] Embedding chunks"
-        )
-
-        embeddings = (
-            self.embedding_engine
-            .embed_batch(texts)
-        )
-
-        dimension = embeddings.shape[1]
-
-        self.vector_store = (
-            FaissVectorStore(dimension)
-        )
-
-        chunk_ids = [c.get("chunk_id", str(i)) for i, c in enumerate(self.chunks)]
-        self.vector_store.add_embeddings(
-            chunk_ids,
-            embeddings.tolist(),
-            self.chunks
-        )
-
-        # Build BM25 and Symbol indexes
-        self.bm25_index.build(self.chunks)
-        self.symbol_index.build(self.chunks)
-
-        # Build CandidatePipeline
-        self.candidate_pipeline = CandidatePipeline(
-            vector_store=self.vector_store,
-            bm25_index=self.bm25_index,
-            symbol_index=self.symbol_index,
-            cross_encoder=self.cross_encoder
-        )
-
-        # Build and save hierarchical index
-        self.hierarchical_index = HierarchicalIndex(self.embedding_engine)
-        self.hierarchical_index.build(self.chunks)
-        self.hierarchical_index.save()
-
-        self.save_cache()
-
-        end = time.time()
-
-        print(
-            f"[Retriever] "
-            f"Indexed {len(self.chunks)} "
-            f"chunks in "
-            f"{end - start:.2f}s"
-        )
-
-    # =====================================================
-    # SEARCH TEXT
-    # =====================================================
-
-    def build_search_text(
-        self,
-        chunk
-    ):
-
-        return f"""
-SYMBOL:
-{chunk.get("name", "")}
-
-TYPE:
-{chunk.get("type", "")}
-
-FILE:
-{chunk.get("file", "")}
-
-DOCSTRING:
-{chunk.get("docstring", "")}
-
-IMPORTS:
-{' '.join(chunk.get("imports", []))}
-
-CODE:
-{chunk.get("code", "")}
-"""
-
-    # =====================================================
-    # SAVE CACHE
-    # =====================================================
-
-    def save_cache(self):
-        self.vector_store.save(os.path.join(INDEX_DIR, "vector_store"))
-        print(
-            "[Retriever] Cache saved"
-        )
-
-    # =====================================================
-    # LOAD CACHE
-    # =====================================================
-
-    def load_cache(self):
-        self.vector_store = FaissVectorStore(384)
-        self.vector_store.load(os.path.join(INDEX_DIR, "vector_store"))
-        
-        self.chunks = list(self.vector_store.chunks_map.values())
-
-        # Rebuild BM25 and Symbol indexes from cached chunks
-        self.bm25_index.build(self.chunks)
-        self.symbol_index.build(self.chunks)
-
-        # Build CandidatePipeline
-        self.candidate_pipeline = CandidatePipeline(
-            vector_store=self.vector_store,
-            bm25_index=self.bm25_index,
-            symbol_index=self.symbol_index,
-            cross_encoder=self.cross_encoder
-        )
-
-        # Load hierarchical index
-        self.hierarchical_index = HierarchicalIndex(self.embedding_engine)
-        if self.hierarchical_index.cache_exists():
-            self.hierarchical_index.load()
-        else:
-            self.hierarchical_index.build(self.chunks)
-            self.hierarchical_index.save()
-
-        print(
-            f"[Retriever] "
-            f"Loaded {len(self.chunks)} chunks"
-        )
+        print(f"[Retriever] Indexed {len(self.chunks)} chunks in {time.time() - start:.2f}s total")
 
     # =====================================================
     # SEARCH
@@ -316,73 +219,98 @@ CODE:
         query,
         top_k=10
     ):
+        """
+        Graph-first search — the primary entry point for all retrieval.
+
+        Routing order (never run ANN until structural resolution fails):
+          1. SYMBOL route  — known symbol in graph cache → 0 ms, no ANN
+          2. GRAPH route   — structural question (callers/deps/impls) → 1-5 ms, no ANN
+          3. SEMANTIC route — fuzzy/conceptual query → ANN + BM25 + CandidatePipeline
+        """
         start = time.time()
 
-        # 1. Resolve query targets using QueryResolver
+        # ── Stage 1: Structural resolution ──────────────────────────────────
         from retrieval.query_resolver import QueryResolver
-        from repository_intelligence.db.connection import SessionLocal
-        
-        db_session = SessionLocal()
-        try:
-            resolver = QueryResolver(db_session)
-            resolved = resolver.resolve(query, self.repo_root)
-            
-            # If we resolved specific target files, perform directed retrieval on graph neighborhood
-            if resolved.target_files:
-                print(f"[Retriever] Directed retrieval triggered for files: {resolved.target_files}")
-                target_file_paths = set(resolved.target_files)
-                
-                from repository_intelligence.models.symbol import Symbol, SymbolRelationship
-                from repository_intelligence.models.file import File
-                
-                sym_rows = db_session.query(Symbol.id).join(File, Symbol.file_id == File.id).filter(
-                    File.path.in_(list(target_file_paths))
-                ).all()
-                sym_ids = [r[0] for r in sym_rows]
-                
-                if sym_ids:
-                    # Find 1st degree neighbor symbol files in graph
-                    neighbors = db_session.query(File.path).join(
-                        Symbol, Symbol.file_id == File.id
-                    ).join(
-                        SymbolRelationship, 
-                        (SymbolRelationship.target_symbol_id == Symbol.id) | 
-                        (SymbolRelationship.source_symbol_id == Symbol.id)
-                    ).filter(
-                        (SymbolRelationship.source_symbol_id.in_(sym_ids)) |
-                        (SymbolRelationship.target_symbol_id.in_(sym_ids))
-                    ).all()
-                    
-                    for r in neighbors:
-                        if r[0]:
-                            target_file_paths.add(r[0])
-                            
-                directed_chunks = [c for c in self.chunks if c.get("file") in target_file_paths]
-                
-                if directed_chunks:
-                    print(f"[Retriever] Directed search space restricted to {len(directed_chunks)} chunks in {len(target_file_paths)} files.")
-                    results = []
-                    for c in directed_chunks:
-                        score = 0.50
-                        if c.get("file") in resolved.target_files:
-                            score = 1.0
-                        results.append({"score": score, "chunk": c})
-                        
-                    from retrieval.hybrid_ranker import HybridRanker
-                    ranker = HybridRanker()
-                    ranked = ranker.rank(query, results, session=db_session)
-                    end = time.time()
-                    print(f"[Retriever] Directed search took {end - start:.2f}s")
-                    return ranked[:top_k]
-        except Exception as e:
-            print(f"[Retriever] Directed search fallback failed: {e}")
-        finally:
-            db_session.close()
+        from retrieval.query_intent import ResolutionMode
 
-        # 2. Fallback to two-stage CandidatePipeline (ANN + BM25 + Symbol → Rerank)
+        try:
+            resolver = QueryResolver()
+            plan = resolver.resolve(query, self.repo_root)
+
+            # ── SYMBOL route ────────────────────────────────────────────────
+            if plan.mode == ResolutionMode.SYMBOL and plan.symbols:
+                results = self._resolve_symbol_path(plan, top_k)
+                elapsed = time.time() - start
+                print(
+                    f"[Retriever] Resolution: SYMBOL ({', '.join(plan.symbol_names[:3])}) "
+                    f"— {elapsed * 1000:.1f}ms, skipped ANN"
+                )
+                if results:
+                    return results
+                # Partial match — symbol found but no file. Cascade to SEMANTIC.
+                print("[Retriever] SYMBOL route yielded no chunks — cascading to SEMANTIC")
+
+            # ── GRAPH route ─────────────────────────────────────────────────
+            elif plan.mode == ResolutionMode.GRAPH:
+                from retrieval.graph_resolver import GraphResolver
+                graph_results = GraphResolver().resolve(plan, top_k)
+                elapsed = time.time() - start
+                print(
+                    f"[Retriever] Resolution: GRAPH (op={plan.graph_op}, "
+                    f"symbols={len(plan.symbols)}) — {elapsed * 1000:.1f}ms, skipped ANN"
+                )
+                if graph_results:
+                    # Wrap in standard {score, chunk} format
+                    return [{"score": c.pop("score", 0.90), "chunk": c} for c in graph_results]
+                # Graph returned nothing — cascade to SEMANTIC
+                print("[Retriever] GRAPH route yielded no chunks — cascading to SEMANTIC")
+
+            else:
+                elapsed = time.time() - start
+                print(
+                    f"[Retriever] Resolution: SEMANTIC ({query[:60]}) "
+                    f"— ANN triggered after {elapsed * 1000:.1f}ms classifier"
+                )
+
+        except Exception as e:
+            print(f"[Retriever] QueryResolver error (falling back to SEMANTIC): {e}")
+
+        # ── Stage 2: Semantic fallback — ANN + BM25 + CandidatePipeline ────
+        return self._semantic_search(query, top_k, start)
+
+    def _resolve_symbol_path(self, plan, top_k: int):
+        """
+        SYMBOL route: read actual source spans from the graph cache and wrap
+        them in chunk-compatible dicts with score=1.0 (deterministic).
+        """
+        from retrieval.graph_resolver import GraphResolver
+        gr = GraphResolver()
+
+        chunks = []
+        seen = set()
+        for sym in plan.symbols[:top_k]:
+            sym_id = sym.get("id")
+            if sym_id in seen:
+                continue
+            seen.add(sym_id)
+            chunk = gr._sym_to_chunk(sym, score=1.0)
+            if chunk:
+                chunks.append({"score": chunk.pop("score", 1.0), "chunk": chunk})
+
+        return chunks
+
+    def _semantic_search(self, query: str, top_k: int, start: float = None):
+        """
+        SEMANTIC fallback — ANN embedding + pgvector + BM25 + CandidatePipeline.
+        Only reached when structural resolution fails or returns empty.
+        """
+        if start is None:
+            import time as _time
+            start = _time.time()
+
         from retrieval.query_intent import RetrievalIntentClassifier
         intent = RetrievalIntentClassifier.classify(query)
-        
+
         if self.candidate_pipeline:
             embedding = self.embedding_engine.embed_text(query)
             results = self.candidate_pipeline.retrieve(
@@ -391,17 +319,10 @@ CODE:
                 top_k=top_k,
                 intent=intent.value
             )
-        elif self.hierarchical_index and self.hierarchical_index.store:
-            from retrieval.hierarchy.hierarchical_retriever import HierarchicalRetriever
-            retriever = HierarchicalRetriever(
-                store=self.hierarchical_index.store,
-                embedding_engine=self.embedding_engine
-            )
-            results = retriever.search(query, top_k=top_k)
         else:
             embedding = self.embedding_engine.embed_text(query)
-            results = self.vector_store.search(embedding, k=top_k)
+            results = self.pgvector_backend.search(embedding, k=top_k)
 
-        end = time.time()
-        print(f"[Retriever] Fallback search took {end - start:.2f}s")
+        elapsed = time.time() - start
+        print(f"[Retriever] SEMANTIC search completed in {elapsed * 1000:.1f}ms")
         return results

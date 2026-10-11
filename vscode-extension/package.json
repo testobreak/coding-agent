@@ -1,0 +1,48 @@
+{
+  "name": "vscode-coding-agent",
+  "displayName": "Personal Coding Agent (Local Ollama)",
+  "description": "Bridges local coding agent with VS Code interface",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursor-agent.inlineChat",
+        "title": "Local Cursor: Inline Chat (Cmd+K)"
+      },
+      {
+        "command": "cursor-agent.fixErrors",
+        "title": "Local Cursor: Fix File Errors"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "cursor-agent.inlineChat",
+        "key": "cmd+k",
+        "mac": "cmd+k",
+        "win": "ctrl+k",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^16.11.7",
+    "typescript": "^4.9.4"
+  }
+}

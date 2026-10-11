@@ -103,8 +103,8 @@ class ImpactAnalyzer:
     def _file_to_test_class(self, file_path: str) -> Optional[str]:
         """
         Convert a Java test file path to a FQCN for mvn -Dtest=.
-        e.g. .../src/test/java/com/acme/hrms/employee/EmployeeServiceTest.java
-             → com.acme.hrms.employee.EmployeeServiceTest
+        e.g. .../src/test/java/com/acme/app/employee/EmployeeServiceTest.java
+             → com.acme.app.employee.EmployeeServiceTest
         """
         path = Path(file_path)
         if path.suffix != ".java":

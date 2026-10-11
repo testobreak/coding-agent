@@ -131,7 +131,7 @@ class TargetResolver:
                 ))
 
             # Check if PATCH mode abort condition is triggered
-            from core.execution_mode import ExecutionMode
+            from core.execution_mode import TaskIntentMode as ExecutionMode
             from runtime.fast_path_router import FastPathRouter
             exec_mode = ExecutionMode.PATCH
             try:

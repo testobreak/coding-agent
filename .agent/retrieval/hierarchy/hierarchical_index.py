@@ -157,7 +157,7 @@ class HierarchicalIndex:
                 module_name = "core"
             by_module[module_name].append(chunk)
 
-        # Pre-defined high-level descriptions/summaries for typical HRMS domains
+        # Pre-defined high-level descriptions/summaries for typical software domains
         descriptions = {
             "auth": "Authentication, authorization, user roles, security access control, and user session management.",
             "payroll": "Employee payroll processing, salary calculations, tax deductions, bonuses, payslip generation, and benefits management.",

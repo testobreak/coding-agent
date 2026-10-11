@@ -11,7 +11,19 @@ class FileManager:
         "__pycache__",
         "node_modules",
         ".agent",
-        "tmp"
+        "tmp",
+        "target",
+        "build",
+        "dist",
+        "out",
+        "bin",
+        "obj",
+        ".gradle",
+        ".mvn",
+        ".idea",
+        ".vscode",
+        "classes",
+        "generated"
     }
 
     def __init__(
@@ -22,6 +34,7 @@ class FileManager:
         self.root = Path(
             root
         ).resolve()
+        self._cached_files = {}
 
     # =====================================================
     # PATH RESOLUTION
@@ -130,6 +143,8 @@ class FileManager:
         backup=True
     ):
 
+        self._cached_files.clear()
+
         target = self.resolve_path(
             path
         )
@@ -143,13 +158,9 @@ class FileManager:
             backup
             and target.exists()
         ):
-
-            backup_path = (
-                target.with_suffix(
-                    target.suffix
-                    + ".bak"
-                )
-            )
+            backup_dir = self.root / ".agent" / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_path = backup_dir / f"{target.name}.bak"
 
             shutil.copy2(
                 target,
@@ -160,6 +171,13 @@ class FileManager:
             content,
             encoding="utf-8"
         )
+
+        try:
+            rel = str(target.relative_to(self.root))
+            from repository_intelligence.manifest.manifest_store import ManifestStore
+            ManifestStore.update_file(str(self.root), rel)
+        except Exception as e:
+            print(f"[FileManager] Manifest update failed for {path}: {e}")
 
     # =====================================================
     # TEMP WRITE
@@ -225,28 +243,36 @@ class FileManager:
             root
         )
 
+        cache_key = str(base.resolve())
+        if cache_key in self._cached_files:
+            return self._cached_files[cache_key]
+
         files = []
 
-        for file in base.rglob("*"):
+        if not base.exists():
+            return []
 
-            if not file.is_file():
-                continue
+        import os
+        for dirpath, dirnames, filenames in os.walk(str(base), topdown=True):
+            # Prune ignored directories in place so os.walk doesn't traverse them
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in self.IGNORE_DIRS and not d.startswith(".")
+            ]
 
-            if any(
-                ignored in file.parts
-                for ignored in self.IGNORE_DIRS
-            ):
-                continue
-
-            files.append(
-
-                str(
-                    file.relative_to(
-                        self.root
+            for filename in filenames:
+                file = Path(dirpath) / filename
+                if any(ignored in file.parts for ignored in self.IGNORE_DIRS):
+                    continue
+                files.append(
+                    str(
+                        file.relative_to(
+                            self.root
+                        )
                     )
                 )
-            )
 
+        self._cached_files[cache_key] = files
         return files
 
     # =====================================================

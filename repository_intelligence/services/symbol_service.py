@@ -82,6 +82,7 @@ class SymbolService:
             embedding.content_hash = content_hash
             embedding.dimensions = len(vector)
             embedding.vector = vector
+            embedding.vector_embedding = vector
             embedding.metadata_ = metadata or {}
             embedding.updated_at = func.now()
 

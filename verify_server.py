@@ -31,13 +31,13 @@ def run_tests():
     session = SessionLocal()
 
     # Create mock entities
-    repo = Repository(name="HRMS-Server", root_path=os.getcwd())
+    repo = Repository(name="CodingAgent-Server", root_path=os.getcwd())
     session.add(repo)
     session.flush()
 
     file_row = File(
         repository_id=repo.id,
-        path="backend/src/main/java/com/hrms/employee/EmployeeService.java",
+        path="backend/src/main/java/com/example/service/EmployeeService.java",
         language="java",
         file_hash="mock_hash_server",
         size_bytes=1000
@@ -49,7 +49,7 @@ def run_tests():
         repository_id=repo.id,
         file_id=file_row.id,
         name="EmployeeService",
-        qualified_name="com.hrms.employee.EmployeeService",
+        qualified_name="com.example.service.EmployeeService",
         symbol_type="class",
         start_line=1,
         end_line=20,
@@ -62,7 +62,7 @@ def run_tests():
     # Write mock file content
     mock_file_path = Path(os.getcwd()) / file_row.path
     mock_file_path.parent.mkdir(parents=True, exist_ok=True)
-    mock_file_path.write_text("package com.hrms.employee;\npublic class EmployeeService {\n    // line 3\n}\n", encoding="utf-8")
+    mock_file_path.write_text("package com.example.service;\npublic class EmployeeService {\n    // line 3\n}\n", encoding="utf-8")
 
     server_process = None
     try:
@@ -151,7 +151,7 @@ def run_tests():
             data = json.loads(res.read().decode('utf-8'))
             print("RETRIEVED DATA:", json.dumps(data, indent=2))
             assert data["goal"] == "explain EmployeeService"
-            assert data["primary_symbol"]["fqn"] in ("com.hrms.employee.EmployeeService", "EmployeeService")
+            assert data["primary_symbol"]["fqn"] in ("com.example.service.EmployeeService", "EmployeeService")
             assert len(data["snippets"]) > 0
             print("  [OK] /retrieve returns compiled context successfully.")
 
@@ -322,9 +322,13 @@ def run_tests():
         except Exception:
             pass
             
-        # Cleanup mock file
+        # Cleanup mock file and directory
         if mock_file_path.exists():
             mock_file_path.unlink()
+        backend_dir = Path(os.getcwd()) / "backend"
+        if backend_dir.exists():
+            import shutil
+            shutil.rmtree(backend_dir, ignore_errors=True)
         
         # Clean DB mock data
         session.delete(symbol_row)

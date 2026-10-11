@@ -13,7 +13,7 @@ def main():
     parser.add_argument(
         "repository_root",
         nargs="?",
-        default=r"D:\HRMS"
+        default="."
     )
     parser.add_argument(
         "--full",

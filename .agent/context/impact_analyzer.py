@@ -51,10 +51,17 @@ class ImpactAnalyzer:
         affected_symbols = []
         affected_tests = []
         try:
+            import uuid
+            target_uuid = None
+            try:
+                target_uuid = uuid.UUID(target_symbol.symbol_id)
+            except Exception:
+                target_uuid = target_symbol.symbol_id
+
             # 1. Transitive caller expansion (Upstream callers)
-            visited_ids = {target_symbol.symbol_id}
-            queue = [target_symbol.symbol_id]
-            depth_map = {target_symbol.symbol_id: 0}
+            visited_ids = {target_uuid}
+            queue = [target_uuid]
+            depth_map = {target_uuid: 0}
             max_depth = 3
 
             while queue:
@@ -70,14 +77,14 @@ class ImpactAnalyzer:
                 ).all()
 
                 for rel in relationships:
-                    if rel.source_symbol_id and str(rel.source_symbol_id) not in visited_ids:
-                        source_id = str(rel.source_symbol_id)
+                    if rel.source_symbol_id and rel.source_symbol_id not in visited_ids:
+                        source_id = rel.source_symbol_id
                         visited_ids.add(source_id)
                         depth_map[source_id] = current_depth + 1
                         queue.append(source_id)
 
             # Retrieve symbol handles for all upstream callers
-            caller_ids = list(visited_ids - {target_symbol.symbol_id})
+            caller_ids = list(visited_ids - {target_uuid})
             if caller_ids:
                 db_symbols = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
                     Symbol.id.in_(caller_ids)
@@ -93,7 +100,7 @@ class ImpactAnalyzer:
                     ))
 
             # 2. Gather affected tests
-            all_symbol_ids = [target_symbol.symbol_id] + caller_ids
+            all_symbol_ids = [target_uuid] + caller_ids
             # Query tests from database joining File
             db_tests = db_sess.query(DBTest, File.path).join(File, DBTest.file_id == File.id).filter(
                 DBTest.target_symbol_id.in_(all_symbol_ids)
@@ -152,7 +159,7 @@ class ImpactAnalyzer:
             # 2.5 Query implementations & interfaces
             implementations = []
             impl_relations = db_sess.query(SymbolRelationship).filter(
-                SymbolRelationship.target_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.target_symbol_id == target_uuid,
                 SymbolRelationship.relationship_type.in_(["IMPLEMENTS", "INHERITS", "EXTENDS"])
             ).all()
             for rel in impl_relations:
@@ -172,7 +179,7 @@ class ImpactAnalyzer:
 
             interfaces = []
             iface_relations = db_sess.query(SymbolRelationship).filter(
-                SymbolRelationship.source_symbol_id == target_symbol.symbol_id,
+                SymbolRelationship.source_symbol_id == target_uuid,
                 SymbolRelationship.relationship_type.in_(["IMPLEMENTS", "INHERITS", "EXTENDS"])
             ).all()
             for rel in iface_relations:

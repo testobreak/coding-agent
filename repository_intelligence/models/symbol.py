@@ -11,8 +11,10 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
-from repository_intelligence.db.connection import Base
+from repository_intelligence.db.connection import Base, PGVectorType
 
+
+import uuid
 
 class Symbol(Base):
 
@@ -28,7 +30,7 @@ class Symbol(Base):
     id = Column(
         UUID(as_uuid=True),
         primary_key=True,
-        server_default=func.gen_random_uuid()
+        default=uuid.uuid4
     )
 
     repository_id = Column(
@@ -47,7 +49,7 @@ class Symbol(Base):
     qualified_name = Column(Text, nullable=False)
     symbol_type = Column(Text, nullable=False)
     parent_symbol_id = Column(
-        UUID(as_uuid=True),
+        Text,
         ForeignKey("symbols.id", ondelete="CASCADE")
     )
     start_line = Column(Integer, nullable=False)
@@ -85,12 +87,12 @@ class SymbolRelationship(Base):
     )
 
     source_symbol_id = Column(
-        UUID(as_uuid=True),
+        Text,
         ForeignKey("symbols.id", ondelete="CASCADE")
     )
 
     target_symbol_id = Column(
-        UUID(as_uuid=True),
+        Text,
         ForeignKey("symbols.id", ondelete="CASCADE")
     )
 
@@ -128,7 +130,7 @@ class Embedding(Base):
     )
 
     symbol_id = Column(
-        UUID(as_uuid=True),
+        Text,
         ForeignKey("symbols.id", ondelete="CASCADE")
     )
 
@@ -137,6 +139,7 @@ class Embedding(Base):
     embedding_model = Column(Text, nullable=False)
     dimensions = Column(Integer, nullable=False)
     vector = Column(JSONB, nullable=False)
+    vector_embedding = Column(PGVectorType)
     metadata_ = Column("metadata", JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -199,14 +202,14 @@ class Test(Base):
     )
 
     symbol_id = Column(
-        UUID(as_uuid=True),
+        Text,
         ForeignKey("symbols.id", ondelete="SET NULL")
     )
 
     name = Column(Text, nullable=False)
     framework = Column(Text)
     target_symbol_id = Column(
-        UUID(as_uuid=True),
+        Text,
         ForeignKey("symbols.id", ondelete="SET NULL")
     )
     metadata_ = Column("metadata", JSONB, nullable=False, default=dict)

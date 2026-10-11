@@ -33,21 +33,41 @@ class TestRunner:
         from execution.validation_router import ValidationRouter
 
         engine = ExecutionContextEngine(self.root)
-        
+        router = ValidationRouter(self.root)
+        impact = router.classify_impact(touched_files or [])
+
+        if not impact.get("run_backend", True):
+            print(f"[TestRunner] Skipping backend tests: {impact.get('reason', 'frontend-only change')}")
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": impact.get("reason"),
+                "failures": [],
+            }
+
+        backend_workspace_types = {
+            WorkspaceType.JAVA_MAVEN,
+            WorkspaceType.JAVA_GRADLE,
+            WorkspaceType.PYTHON,
+        }
+
         # Resolve workspaces from touched files
         workspaces = []
         if touched_files:
             for f in touched_files:
                 try:
                     ws = engine.resolve_workspace(f)
-                    if ws not in workspaces:
+                    if ws.type in backend_workspace_types and ws not in workspaces:
                         workspaces.append(ws)
                 except WorkspaceRoutingError:
                     pass
 
-        # Fallback to all detected workspaces if none matched
+        # Fallback to backend workspaces only — never run npm/vitest as "backend tests"
         if not workspaces:
-            workspaces = engine.workspaces
+            workspaces = [
+                ws for ws in engine.workspaces
+                if ws.type in backend_workspace_types
+            ]
 
         # Default fallback to Python/pytest if no workspaces detected at all
         if not workspaces:
@@ -110,12 +130,27 @@ class TestRunner:
     # FRONTEND BUILD (Vite / TypeScript)
     # =====================================================
 
-    def run_frontend_build(self):
+    def run_frontend_build(self, touched_files=None):
         """
         Locate package.json and run the build command inside its resolved workspace.
+        Skipped when all touched files are backend-only.
         """
         from execution.context_engine import ExecutionContextEngine
         from repository_intelligence.workspace import WorkspaceType
+        from execution.validation_router import ValidationRouter
+
+        router = ValidationRouter(self.root)
+        impact = router.classify_impact(touched_files or [])
+
+        if not impact.get("run_frontend", True):
+            print(f"[TestRunner] Skipping frontend build: {impact.get('reason', 'backend-only change')}")
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": impact.get("reason"),
+                "failures": [],
+            }
+
         engine = ExecutionContextEngine(self.root)
         
         node_ws = next((w for w in engine.workspaces if w.type == WorkspaceType.NODE), None)
@@ -151,9 +186,23 @@ class TestRunner:
     # FRONTEND TESTS
     # =====================================================
 
-    def run_frontend_tests(self):
+    def run_frontend_tests(self, touched_files=None):
         from execution.context_engine import ExecutionContextEngine
         from repository_intelligence.workspace import WorkspaceType
+        from execution.validation_router import ValidationRouter
+
+        router = ValidationRouter(self.root)
+        impact = router.classify_impact(touched_files or [])
+
+        if not impact.get("run_frontend", True):
+            print(f"[TestRunner] Skipping frontend tests: {impact.get('reason', 'backend-only change')}")
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": impact.get("reason"),
+                "failures": [],
+            }
+
         engine = ExecutionContextEngine(self.root)
         
         node_ws = next((w for w in engine.workspaces if w.type == WorkspaceType.NODE), None)

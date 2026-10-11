@@ -287,7 +287,7 @@ class ContextBuilder:
                     primary_symbol = resolved_targets[0] if resolved_targets else None
                 
                 # Gating Layer 1: include_local_symbol
-                if primary_symbol and not cursor_symbol and not policy.include_local_symbol:
+                if primary_symbol and not cursor_symbol and not getattr(policy, "include_local_symbol", True):
                     primary_symbol = None
 
                 if primary_symbol:
@@ -295,13 +295,24 @@ class ContextBuilder:
                 else:
                     print("[ContextBuilder] No primary symbol resolved.")
                 
-                # Gating Layer 2: include_repo_context
                 is_fallback = primary_symbol and primary_symbol.symbol_id and primary_symbol.symbol_id.startswith("sym_fallback")
-                if primary_symbol and radius != ContextRadius.DIRECT and not is_fallback and policy.include_repo_context:
+                import uuid
+                primary_uuid = None
+                is_real_uuid = False
+                if primary_symbol and primary_symbol.symbol_id and not is_fallback:
+                    try:
+                        primary_uuid = uuid.UUID(primary_symbol.symbol_id)
+                        is_real_uuid = True
+                    except Exception:
+                        primary_uuid = None
+
+                if primary_symbol and radius != ContextRadius.DIRECT and not is_fallback and getattr(policy, "include_repo_context", True):
                     # Direct callers
-                    caller_relations = db_sess.query(SymbolRelationship).filter(
-                        SymbolRelationship.target_symbol_id == primary_symbol.symbol_id
-                    ).all()
+                    caller_relations = []
+                    if is_real_uuid:
+                        caller_relations = db_sess.query(SymbolRelationship).filter(
+                            SymbolRelationship.target_symbol_id == primary_uuid
+                        ).all()
                     caller_ids = [rel.source_symbol_id for rel in caller_relations if rel.source_symbol_id]
                     if caller_ids:
                         db_callers = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
@@ -318,9 +329,11 @@ class ContextBuilder:
                             ))
 
                     # Direct callees
-                    callee_relations = db_sess.query(SymbolRelationship).filter(
-                        SymbolRelationship.source_symbol_id == primary_symbol.symbol_id
-                    ).all()
+                    callee_relations = []
+                    if is_real_uuid:
+                        callee_relations = db_sess.query(SymbolRelationship).filter(
+                            SymbolRelationship.source_symbol_id == primary_uuid
+                        ).all()
                     for rel in callee_relations:
                         if rel.target_symbol_id:
                             sym = db_sess.query(Symbol).join(File, Symbol.file_id == File.id).filter(
@@ -353,17 +366,17 @@ class ContextBuilder:
                                 ))
 
                     # Direct tests
-                    symbol_ids_for_test = [primary_symbol.symbol_id] if not is_fallback else []
+                    symbol_ids_for_test = [primary_uuid] if not is_fallback and primary_uuid else []
                     seen_test_keys = set()
                     if symbol_ids_for_test:
-                        db_primary = db_sess.query(Symbol).filter(Symbol.id == primary_symbol.symbol_id).first()
+                        db_primary = db_sess.query(Symbol).filter(Symbol.id == primary_uuid).first()
                         if db_primary and db_primary.parent_symbol_id:
-                            symbol_ids_for_test.append(str(db_primary.parent_symbol_id))
+                            symbol_ids_for_test.append(db_primary.parent_symbol_id)
                         if "." in primary_symbol.fqn:
                             class_fqn = ".".join(primary_symbol.fqn.split(".")[:-1])
                             db_class = db_sess.query(Symbol).filter(Symbol.qualified_name == class_fqn).first()
                             if db_class:
-                                symbol_ids_for_test.append(str(db_class.id))
+                                symbol_ids_for_test.append(db_class.id)
 
                         db_tests = db_sess.query(DBTest, File.path).join(File, DBTest.file_id == File.id).filter(
                             DBTest.target_symbol_id.in_(symbol_ids_for_test)
@@ -414,10 +427,10 @@ class ContextBuilder:
                                 end_line=hsym.end_line if hsym.end_line is not None else 1
                             ))
 
-                    if radius == ContextRadius.EXTENDED and not is_fallback:
+                    if radius == ContextRadius.EXTENDED and not is_fallback and is_real_uuid:
                         # Dependencies (e.g. USES/INHERITS relationships)
                         dep_relations = db_sess.query(SymbolRelationship).filter(
-                            SymbolRelationship.source_symbol_id == primary_symbol.symbol_id,
+                            SymbolRelationship.source_symbol_id == primary_uuid,
                             SymbolRelationship.relationship_type.in_(["USES", "INHERITS", "IMPLEMENTS"])
                         ).all()
                         for rel in dep_relations:
@@ -460,7 +473,7 @@ class ContextBuilder:
                                     pass
 
                 # 3. Impact Analysis & Risk Score
-                if primary_symbol and policy.include_repo_context:
+                if primary_symbol and getattr(policy, "include_repo_context", True):
                     from context.impact_analyzer import ImpactAnalyzer
                     analyzer = ImpactAnalyzer(db_session=db_sess)
                     report = analyzer.analyze(primary_symbol, session=db_sess)
@@ -470,13 +483,13 @@ class ContextBuilder:
 
             # 4. Snippet Assembly
             symbols_for_snippets = []
-            if primary_symbol and policy.include_local_symbol:
+            if primary_symbol and getattr(policy, "include_local_symbol", True):
                 symbols_for_snippets.append(primary_symbol)
-            if radius != ContextRadius.DIRECT and policy.include_repo_context:
+            if radius != ContextRadius.DIRECT and getattr(policy, "include_repo_context", True):
                 symbols_for_snippets.extend(callers)
                 symbols_for_snippets.extend(callees)
                 symbols_for_snippets.extend(related_tests)
-            if radius == ContextRadius.EXTENDED and policy.include_repo_context:
+            if radius == ContextRadius.EXTENDED and getattr(policy, "include_repo_context", True):
                 symbols_for_snippets.extend(dependencies)
 
             # Deduplicate by FQN
@@ -513,7 +526,7 @@ class ContextBuilder:
 
             # Add UI Context Snippets (Layer 0) - Tier 1
             ui_snippets = []
-            if policy.include_ui_context and state and getattr(state, "runtime_context", None):
+            if getattr(policy, "include_ui_context", True) and state and getattr(state, "runtime_context", None):
                 runtime_ctx = state.runtime_context
                 
                 # active_selection
@@ -631,7 +644,7 @@ class ContextBuilder:
             past_episodes = []
             past_plans = []
             past_repairs = []
-            if policy.include_memory:
+            if getattr(policy, "include_memory", True):
                 try:
                     past_episodes = self.experience_retriever.find_similar_episodes(goal, limit=3)
                     goal_type = intent.action if intent else "modify"
@@ -732,6 +745,17 @@ class ContextBuilder:
         """
         Traverses the codebase relationship graph to construct a SymbolContextPackage.
         """
+        if target_symbol and target_symbol.symbol_id and target_symbol.symbol_id.startswith("sym_fallback"):
+            return SymbolContextPackage(
+                target_symbol=target_symbol,
+                callers=[],
+                callees=[],
+                tests=[],
+                interfaces=[],
+                implementations=[],
+                related_symbols=[]
+            )
+
         db_sess = session
         close_session = False
         if db_sess is None:

@@ -9,7 +9,7 @@ import sqlite3
 
 EXPERIENCE_DATABASE_URL = os.getenv(
     "EXPERIENCE_DATABASE_URL",
-    "postgresql://postgres:admin@localhost:5432/agent_experience"
+    "postgresql:///agent_experience"
 )
 
 # Determine the absolute path for SQLite fallback
@@ -20,31 +20,57 @@ if os.path.exists(agent_dir) and os.path.isdir(agent_dir):
 else:
     SQLITE_DB_PATH = os.path.join(PROJECT_ROOT, "experience.db")
 
-# Setup database engine
-if EXPERIENCE_DATABASE_URL.startswith("postgresql"):
-    try:
-        test_engine = create_engine(EXPERIENCE_DATABASE_URL, connect_args={"connect_timeout": 2})
-        with test_engine.connect() as conn:
-            pass
-        engine = test_engine
-    except Exception:
-        fallback_url = f"sqlite:///{SQLITE_DB_PATH}"
-        print(f"[ExperienceDatabase] PostgreSQL connection failed. Falling back to SQLite ({fallback_url})...")
-        EXPERIENCE_DATABASE_URL = fallback_url
-        engine = create_engine(EXPERIENCE_DATABASE_URL)
-else:
-    engine = create_engine(EXPERIENCE_DATABASE_URL)
+# Setup database engine and session factory lazily
+_engine = None
+_session_factory = None
 
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    if isinstance(dbapi_connection, sqlite3.Connection):
-        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+def get_engine():
+    global _engine
+    if _engine is None:
+        if EXPERIENCE_DATABASE_URL.startswith("postgresql"):
+            try:
+                test_engine = create_engine(EXPERIENCE_DATABASE_URL, connect_args={"connect_timeout": 2})
+                with test_engine.connect() as conn:
+                    pass
+                _engine = test_engine
+            except Exception as e:
+                import traceback
+                fallback_url = f"sqlite:///{SQLITE_DB_PATH}"
+                print(f"[ExperienceDatabase] PostgreSQL connection failed: {e}")
+                traceback.print_exc()
+                print(f"[ExperienceDatabase] Falling back to SQLite ({fallback_url})...")
+                _engine = create_engine(fallback_url)
+        else:
+            _engine = create_engine(EXPERIENCE_DATABASE_URL)
 
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
-)
+        @event.listens_for(_engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            if isinstance(dbapi_connection, sqlite3.Connection):
+                dbapi_connection.execute("PRAGMA foreign_keys=ON")
+    return _engine
+
+class LazySessionLocal:
+    def __call__(self, *args, **kwargs):
+        global _session_factory
+        if _session_factory is None:
+            _session_factory = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=get_engine()
+            )
+        return _session_factory(*args, **kwargs)
+
+    def configure(self, *args, **kwargs):
+        global _session_factory
+        if _session_factory is None:
+            _session_factory = sessionmaker(
+                autocommit=False,
+                autoflush=False,
+                bind=get_engine()
+            )
+        return _session_factory.configure(*args, **kwargs)
+
+SessionLocal = LazySessionLocal()
 
 Base = declarative_base()
 
@@ -130,4 +156,4 @@ class StrategyRecord(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 def create_experience_tables():
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=get_engine())

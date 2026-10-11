@@ -2,7 +2,8 @@ from pathlib import Path
 import subprocess
 
 from repository_intelligence.indexer.file_discovery import (
-    discover_files
+    discover_files,
+    is_file_discoverable
 )
 
 from repository_intelligence.indexer.hash_utils import (
@@ -90,6 +91,9 @@ class RepositoryScanner:
             if not absolute_path.is_file():
                 continue
 
+            if not is_file_discoverable(absolute_path, repository_root_path):
+                continue
+
             info = {
                 "absolute_path": str(absolute_path),
                 "path": relative_path,
@@ -104,10 +108,11 @@ class RepositoryScanner:
             else:
                 changed.append(info)
 
-        removed = [
-            path for path in known_hashes
-            if not (repository_root_path / path).is_file()
-        ]
+        removed = []
+        for path in known_hashes:
+            abs_path = repository_root_path / path
+            if not abs_path.is_file() or not is_file_discoverable(abs_path, repository_root_path):
+                removed.append(path)
 
         return {
             "scanned": scanned,

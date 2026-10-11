@@ -1,22 +1,42 @@
 from pathlib import Path
-from sqlalchemy import text
 from repository_intelligence.models.symbol import Symbol, SymbolRelationship
 from repository_intelligence.models.file import File
 
 
 class SymbolRanker:
     """
-    Enterprise Multi-Stage Symbol Ranker.
-    Ranks resolved symbol candidates using a multi-signal scoring formula:
-    total_score = (
-          exact_match_score
-        + namespace_score
-        + graph_score
-        + file_proximity_score
-        + import_score
-        + embedding_score
-    )
+    Symbol-First Multi-Signal Ranker (Phase 8).
+
+    Scoring formula:
+        score = (
+            symbol_match   * 0.40   # exact / prefix name match
+          + graph_distance * 0.25   # graph neighbourhood proximity
+          + open_buffer    * 0.15   # same or nearby file as active file
+          + semantic       * 0.15   # import / namespace signal
+          + history        * 0.05   # relationship exists in graph
+        )
+
+    For explicit symbol queries symbol_match dominates.
+    Semantic (embedding) score is a fallback, not the driver.
     """
+
+    # Weights
+    W_SYMBOL_MATCH   = 0.40
+    W_GRAPH_DISTANCE = 0.25
+    W_OPEN_BUFFER    = 0.15
+    W_SEMANTIC       = 0.15
+    W_HISTORY        = 0.05
+
+    # Raw point constants (normalised to 0-1 before weighting)
+    _EXACT_QUALIFIED = 1000.0
+    _EXACT_NAME      = 200.0
+    _PREFIX_NAME     = 40.0
+    _NAMESPACE_MATCH = 50.0
+    _IMPORT_MATCH    = 300.0
+    _SAME_FILE       = 80.0
+    _SAME_DIR        = 30.0
+    _SAME_PARENT     = 20.0
+    _GRAPH_DIRECT    = 100.0
 
     def rank(
         self,
@@ -24,116 +44,124 @@ class SymbolRanker:
         repository_id,
         target_name: str,
         candidates: list[Symbol],
-        source_file: File | None = None
+        source_file: File | None = None,
+        graph_distances: dict | None = None,
     ) -> list[Symbol]:
-        """
-        Ranks a list of candidate symbols based on structural context and scoring rules.
-        """
+        """Rank candidate symbols using the symbol-first formula."""
         if not candidates:
             return []
 
-        # Infer source file namespace/package if source_file is provided
+        simple_target = target_name.split(".")[-1]
+
+        # Pre-compute shared context once
         source_file_package = None
+        imports: set = set()
         if source_file:
             source_file_package = self._get_file_package(session, source_file)
-
-        # Pre-query all imports of the source file to make import matching fast
-        imports = set()
-        if source_file:
             import_rows = (
                 session.query(SymbolRelationship.target_name)
                 .filter(
                     SymbolRelationship.source_file_id == source_file.id,
-                    SymbolRelationship.relationship_type == "USES"
+                    SymbolRelationship.relationship_type == "USES",
                 )
                 .all()
             )
             imports = {r[0].strip() for r in import_rows if r[0]}
 
-        ranked = []
-
+        scored = []
         for candidate in candidates:
-            score = 0.0
 
-            # 1. Exact Qualified Name Match (Phase 3)
+            # ── 1. symbol_match ────────────────────────────────────────
+            sym_raw = 0.0
             if candidate.qualified_name == target_name:
-                score += 1000.0
+                sym_raw = self._EXACT_QUALIFIED
+            elif candidate.name == simple_target:
+                sym_raw = self._EXACT_NAME
+            elif (
+                candidate.name.startswith(simple_target)
+                or simple_target.startswith(candidate.name)
+            ):
+                sym_raw = self._PREFIX_NAME
+            sym_score = min(sym_raw / self._EXACT_QUALIFIED, 1.0)
 
-            # 2. Exact Symbol Name Match (Phase 4)
-            simple_target = target_name.split(".")[-1]
-            if candidate.name == simple_target:
-                score += 200.0
-
-            # 3. Prefix Match (Phase 5)
-            elif candidate.name.startswith(simple_target) or simple_target.startswith(candidate.name):
-                score += 40.0
-
-            # 4. Namespace Weighting (Phase 2)
-            if "." in target_name:
-                target_ns = ".".join(target_name.split(".")[:-1])
-                if target_ns and target_ns in candidate.qualified_name:
-                    score += 50.0
-
-            # Also give namespace boost if candidate shares same package namespace as source file
-            if source_file_package and source_file_package in candidate.qualified_name:
-                score += 50.0
-
-            # 5. Import Score
-            if candidate.qualified_name in imports or any(imp.endswith(f".{candidate.name}") for imp in imports):
-                score += 300.0
-
-            # 6. Import Graph Weighting (Phase 6)
-            if source_file:
+            # ── 2. graph_distance ──────────────────────────────────────
+            graph_raw = 0.0
+            if graph_distances and candidate.id in graph_distances:
+                dist = graph_distances[candidate.id]
+                graph_raw = self._GRAPH_DIRECT / max(dist, 1)
+            elif source_file:
                 has_rel = session.query(SymbolRelationship).filter(
                     SymbolRelationship.repository_id == repository_id,
                     (
-                        (SymbolRelationship.source_file_id == source_file.id) &
-                        (SymbolRelationship.target_symbol_id == candidate.id)
-                    ) |
-                    (
-                        (SymbolRelationship.source_symbol_id == candidate.id) &
-                        (SymbolRelationship.repository_id == repository_id)
+                        (SymbolRelationship.source_file_id == source_file.id)
+                        & (SymbolRelationship.target_symbol_id == candidate.id)
                     )
+                    | (
+                        (SymbolRelationship.source_symbol_id == candidate.id)
+                        & (SymbolRelationship.repository_id == repository_id)
+                    ),
                 ).first()
                 if has_rel:
-                    score += 150.0
+                    graph_raw = self._GRAPH_DIRECT
+            graph_score = min(graph_raw / self._GRAPH_DIRECT, 1.0)
 
-            # 7. File Proximity Score (Phase 7)
+            # ── 3. open_buffer (file proximity) ───────────────────────
+            buf_raw = 0.0
             if source_file and candidate.file_id:
-                candidate_file = session.query(File).filter(File.id == candidate.file_id).first()
-                if candidate_file:
-                    if candidate_file.id == source_file.id:
-                        score += 80.0
+                cand_file = (
+                    session.query(File)
+                    .filter(File.id == candidate.file_id)
+                    .first()
+                )
+                if cand_file:
+                    if cand_file.id == source_file.id:
+                        buf_raw = self._SAME_FILE
                     else:
-                        source_parts = Path(source_file.path).parts
-                        candidate_parts = Path(candidate_file.path).parts
-                        common_prefix_count = 0
-                        for p1, p2 in zip(source_parts, candidate_parts):
-                            if p1 == p2:
-                                common_prefix_count += 1
-                            else:
-                                break
-                        if common_prefix_count >= 3:
-                            score += 30.0
-                        if Path(source_file.path).parent == Path(candidate_file.path).parent:
-                            score += 20.0
+                        s_parts = Path(source_file.path).parts
+                        c_parts = Path(cand_file.path).parts
+                        common = sum(
+                            1 for p1, p2 in zip(s_parts, c_parts) if p1 == p2
+                        )
+                        if common >= 3:
+                            buf_raw += self._SAME_DIR
+                        if Path(source_file.path).parent == Path(cand_file.path).parent:
+                            buf_raw += self._SAME_PARENT
+            buf_score = min(buf_raw / self._SAME_FILE, 1.0)
 
-            ranked.append((score, candidate))
+            # ── 4. semantic (import / namespace) ───────────────────────
+            sem_raw = 0.0
+            if candidate.qualified_name in imports or any(
+                imp.endswith(f".{candidate.name}") for imp in imports
+            ):
+                sem_raw += self._IMPORT_MATCH
+            if "." in target_name:
+                target_ns = ".".join(target_name.split(".")[:-1])
+                if target_ns and target_ns in (candidate.qualified_name or ""):
+                    sem_raw += self._NAMESPACE_MATCH
+            if source_file_package and source_file_package in (
+                candidate.qualified_name or ""
+            ):
+                sem_raw += self._NAMESPACE_MATCH
+            sem_score = min(sem_raw / self._IMPORT_MATCH, 1.0)
 
-        # Sort candidate list descending by score
-        ranked.sort(key=lambda x: x[0], reverse=True)
+            # ── 5. history (any relationship exists) ───────────────────
+            hist_score = 1.0 if graph_raw > 0 else 0.0
 
-        # Print debug logging for scoring transitions (pure ASCII only to prevent Windows console encoding crashes)
-        for sc, cand in ranked[:5]:
-            print(f"[SymbolRanker] Scored Candidate {cand.qualified_name}: Score {sc:.1f}")
+            # ── Weighted total ─────────────────────────────────────────
+            total = (
+                sym_score   * self.W_SYMBOL_MATCH
+                + graph_score * self.W_GRAPH_DISTANCE
+                + buf_score   * self.W_OPEN_BUFFER
+                + sem_score   * self.W_SEMANTIC
+                + hist_score  * self.W_HISTORY
+            )
+            scored.append((total, candidate))
 
-        return [item[1] for item in ranked]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item[1] for item in scored]
 
     def _get_file_package(self, session, source_file: File) -> str | None:
-        """
-        Infers the namespace/package of the given source file.
-        """
-        # A: Check first symbol's qualified name in this file
+        """Infer the namespace/package of the given source file."""
         first_symbol = (
             session.query(Symbol)
             .filter(Symbol.file_id == source_file.id)
@@ -144,7 +172,6 @@ class SymbolRanker:
             if len(parts) > 1:
                 return ".".join(parts[:-1])
 
-        # B: Fallback to parsing package/namespace from relative path
         rel_path = getattr(source_file, "relative_path", None) or getattr(source_file, "path", None)
         if rel_path:
             normalized_path = rel_path.replace("\\", "/")

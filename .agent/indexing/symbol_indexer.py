@@ -108,15 +108,24 @@ class SymbolIndexer:
         language: str,
     ) -> list:
         rows = []
+        
+        # Helper to construct stable parent symbol ID
+        def get_parent_id(parent_name: str | None) -> str | None:
+            if not parent_name:
+                return None
+            return f"{language.lower()}:{rel_path.replace('\\\\', '/')}#CLASS:{parent_name}"
 
         # ── Classes ──────────────────────────────────────────
         for sym in parsed.classes:
+            symbol_id = f"{language.lower()}:{rel_path.replace('\\\\', '/')}#CLASS:{sym.name}"
+            parent_id = get_parent_id(sym.parent)
             rows.append((
-                file_id, repo_id,
+                symbol_id, file_id, repo_id,
                 sym.name,
                 self._qualified(rel_path, sym.parent, sym.name),
                 CLASS,
                 sym.parent,
+                parent_id,
                 sym.line_start, sym.line_end,
                 sym.signature or sym.name,
                 language,
@@ -124,11 +133,13 @@ class SymbolIndexer:
 
         # ── Interfaces ────────────────────────────────────────
         for sym in parsed.interfaces:
+            symbol_id = f"{language.lower()}:{rel_path.replace('\\\\', '/')}#INTERFACE:{sym.name}"
             rows.append((
-                file_id, repo_id,
+                symbol_id, file_id, repo_id,
                 sym.name,
                 self._qualified(rel_path, None, sym.name),
                 INTERFACE,
+                None,
                 None,
                 sym.line_start, sym.line_end,
                 sym.signature or sym.name,
@@ -137,11 +148,13 @@ class SymbolIndexer:
 
         # ── Enums ─────────────────────────────────────────────
         for sym in parsed.enums:
+            symbol_id = f"{language.lower()}:{rel_path.replace('\\\\', '/')}#ENUM:{sym.name}"
             rows.append((
-                file_id, repo_id,
+                symbol_id, file_id, repo_id,
                 sym.name,
                 self._qualified(rel_path, None, sym.name),
                 ENUM,
+                None,
                 None,
                 sym.line_start, sym.line_end,
                 sym.signature or sym.name,
@@ -150,12 +163,25 @@ class SymbolIndexer:
 
         # ── Methods (inside classes) ──────────────────────────
         for sym in parsed.methods:
+            parent_id = get_parent_id(sym.parent)
+            import re
+            sig_params = ""
+            if sym.signature:
+                match = re.search(r'\((.*?)\)', sym.signature)
+                if match:
+                    params = match.group(1).strip()
+                    if params:
+                        sig_params = ",".join([p.strip().split()[-2] for p in params.split(",") if len(p.strip().split()) >= 2])
+            
+            method_suffix = f"{sym.name}({sig_params})" if sig_params else sym.name
+            symbol_id = f"{language.lower()}:{rel_path.replace('\\\\', '/')}#METHOD:{method_suffix}"
             rows.append((
-                file_id, repo_id,
+                symbol_id, file_id, repo_id,
                 sym.name,
                 self._qualified(rel_path, sym.parent, sym.name),
                 METHOD,
                 sym.parent,
+                parent_id,
                 sym.line_start, sym.line_end,
                 sym.signature or sym.name,
                 language,
@@ -163,11 +189,13 @@ class SymbolIndexer:
 
         # ── Top-level functions ───────────────────────────────
         for sym in parsed.functions:
+            symbol_id = f"{language.lower()}:{rel_path.replace('\\\\', '/')}#FUNCTION:{sym.name}"
             rows.append((
-                file_id, repo_id,
+                symbol_id, file_id, repo_id,
                 sym.name,
                 self._qualified(rel_path, None, sym.name),
                 FUNCTION,
+                None,
                 None,
                 sym.line_start, sym.line_end,
                 sym.signature or sym.name,
@@ -201,11 +229,11 @@ class SymbolIndexer:
     def _insert_symbols(self, rows: list) -> None:
         sql = """
             INSERT INTO symbols
-                (file_id, repository_id, name, qualified_name,
-                 symbol_type, parent_name,
+                (id, file_id, repository_id, name, qualified_name,
+                 symbol_type, parent_name, parent_symbol_id,
                  line_start, line_end, signature, language)
             VALUES
-                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
         """
         with get_conn() as conn:

@@ -19,6 +19,10 @@ from memory.execution_history import (
 )
 
 
+from memory.event_store import EventStore
+from memory.artifact_store import ArtifactStore
+
+
 class StateManager:
 
     def __init__(self):
@@ -28,10 +32,82 @@ class StateManager:
         ] = None
 
         self.task_id = None
+        self.ephemeral = True
 
         self.persistence = (
             StatePersistence()
         )
+        self.event_store = EventStore()
+        self.artifact_store = ArtifactStore()
+
+    # =====================================================
+    # SNAPSHOT ISOLATION
+    # =====================================================
+
+    def validate_snapshot(self, repo_root: str = ".") -> Optional["SnapshotValidationResult"]:
+        """
+        Compare the stored snapshot_id in the current TaskState against the
+        live repository state. Returns a SnapshotValidationResult.
+
+        Call this after load_state() to detect if the repo changed while the
+        task was suspended. If stale, call apply_snapshot_invalidation() to
+        clear derived intelligence before resuming execution.
+
+        Returns None if no state is loaded or snapshot_id was never recorded
+        (legacy tasks without snapshot support).
+        """
+        self._ensure_state()
+
+        stored_id = getattr(self.state, "snapshot_id", "") or ""
+        if not stored_id:
+            return None
+
+        try:
+            from repository.snapshot_manager import SnapshotManager
+            result = SnapshotManager().build_validation_result(
+                stored_snapshot_id=stored_id,
+                repo_root=repo_root,
+            )
+            return result
+        except Exception as e:
+            print(f"[StateManager] Snapshot validation failed (non-fatal): {e}")
+            return None
+
+    def apply_snapshot_invalidation(self, result, repo_root: str = "."):
+        """
+        Apply selective invalidation based on a SnapshotValidationResult.
+
+        Clears all ephemeral/derived fields (retrieved_chunks, active_symbols,
+        tool_outputs, etc.) while preserving control-plane state (goal,
+        current_plan, modification_targets).
+
+        Also updates state.snapshot_id to the current snapshot so subsequent
+        resume checks start fresh.
+        """
+        if result is None or result.is_fresh:
+            return
+
+        self._ensure_state()
+
+        cleared = []
+        for field_name in result.stale_fields:
+            if hasattr(self.state, field_name):
+                default = [] if field_name not in ("git_diff", "last_confidence") else ("" if field_name == "git_diff" else 0.0)
+                setattr(self.state, field_name, default)
+                cleared.append(field_name)
+
+        # Update snapshot_id to current so next resume is fresh
+        self.state.snapshot_id = result.current_snapshot.snapshot_id
+        self.state.dirty_files_at_creation = result.current_snapshot.dirty_files
+
+        if cleared:
+            print(
+                f"[StateManager] Snapshot stale — cleared {len(cleared)} fields "
+                f"(changed_files={result.changed_files})"
+            )
+
+        self._touch()
+
 
     # =====================================================
     # TASK
@@ -71,6 +147,9 @@ class StateManager:
     def save_state(self):
 
         self._ensure_state()
+
+        if getattr(self, "ephemeral", False):
+            return
 
         self.persistence.save(
             self.state,
@@ -333,8 +412,7 @@ class StateManager:
 
         self._ensure_state()
 
-        self.state.execution_history.append({
-
+        event_data = {
             "action_id":
                 record.action_id,
 
@@ -367,7 +445,15 @@ class StateManager:
 
             "error":
                 record.error
-        })
+        }
+
+        self.state.execution_history.append(event_data)
+
+        try:
+            if not getattr(self, "ephemeral", False):
+                self.event_store.append_event(self.task_id, event_data)
+        except Exception as e:
+            print(f"[StateManager] Failed to journal execution event: {e}")
 
         self._touch()
 

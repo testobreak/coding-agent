@@ -1,135 +1,95 @@
-# HRMS
+# Personal Coding Agent (`coding-agent`)
 
-Internal HR / Resource Management / Billing Analytics platform.
+A local, autonomous AI coding agent and repository intelligence platform designed specifically for local Ollama models (e.g. `qwen2.5-coder:7b`). It performs deterministic code retrieval (0 LLM calls), context compaction, and single-turn model reasoning with streaming telemetry. Can be pointed at ANY external repository without modifying target code.
 
-| Layer       | Tech                                                                 |
-|-------------|----------------------------------------------------------------------|
-| Backend     | Java 21, Spring Boot 4.0.6 (Web MVC, Data JPA, Security, OAuth2 RS, Validation, Scheduler, Actuator), Maven, Flyway, MapStruct, Lombok, springdoc-openapi |
-| Database    | PostgreSQL 18 (native `uuidv7()`, `citext`, `pgcrypto`)              |
-| Auth        | Keycloak 26 (OAuth2 / OIDC, PKCE)                                    |
-| Frontend    | React 19, TypeScript, Vite, Tailwind, shadcn/ui, TanStack Query, React Router, React Hook Form, Zod, Recharts, keycloak-js |
-| Storage     | MinIO locally, S3 in production (single `StorageService` abstraction) |
-| Cache / Jobs | Redis, Spring `@Scheduled`                                          |
+---
 
-## Quick start (local)
+## 🏗 Architecture Overview
 
-Prerequisites:
-- Docker Desktop (or Docker Engine + Compose v2)
-- JDK 21
-- Node.js 20+ and npm
-
-```powershell
-# 1. configure env
-Copy-Item .env.example .env
-
-# 2. bring up the platform (postgres, keycloak, minio, redis)
-docker compose -f infra/docker-compose.yml --env-file .env up -d
-
-# 3. wait until healthy
-docker compose -f infra/docker-compose.yml ps
-```
-
-After step 3 you should have:
-
-| Service       | URL / Port                 | Credentials (defaults)                     |
-|---------------|----------------------------|---------------------------------------------|
-| PostgreSQL    | localhost:5432             | `hrms` / `POSTGRES_PASSWORD` from `.env`    |
-| Keycloak      | http://localhost:8081      | `admin` / `KEYCLOAK_ADMIN_PASSWORD`         |
-| Keycloak realm | `hrms` (auto-imported)    | seeded users: admin@acme.local, hr@…, employee@… |
-| MinIO API     | http://localhost:9000      | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`   |
-| MinIO Console | http://localhost:9001      | same as above                               |
-| Redis         | localhost:6379             | no auth in dev                              |
-
-Backend and frontend run on the host (not in Docker) during dev so reload is fast. Their setup will land in Phase 1 / Phase 3.
-
-## Running the backend (Phase 1)
-
-Once the compose stack is healthy:
-
-```powershell
-cd backend
-mvn spring-boot:run "-Dspring-boot.run.profiles=local"
-```
-
-Then probe:
-
-| URL                                              | Expectation                                                   |
-|--------------------------------------------------|----------------------------------------------------------------|
-| `http://localhost:8080/actuator/health`          | `200 {"status":"UP"}` (no auth)                                |
-| `http://localhost:8080/swagger-ui.html`          | OpenAPI explorer (no auth in dev)                              |
-| `http://localhost:8080/api/me` (no token)        | `401` with `application/problem+json` body, `WWW-Authenticate` |
-| `http://localhost:8080/api/me` with bearer JWT   | `200` with `subjectUuid`, `username`, `email`, `roles[]`       |
-
-### Getting a token for `/api/me`
-
-```powershell
-$body = "client_id=hrms-frontend&grant_type=password&username=hr@acme.local&password=Hr#1234567"
-$tok  = Invoke-RestMethod -Method Post `
-        -ContentType "application/x-www-form-urlencoded" `
-        -Uri "http://localhost:8081/realms/hrms/protocol/openid-connect/token" `
-        -Body $body
-Invoke-RestMethod -Headers @{ Authorization = "Bearer $($tok.access_token)" } `
-                  -Uri "http://localhost:8080/api/me"
-```
-
-> The seeded users (`admin@acme.local`, `hr@acme.local`, `employee@acme.local`)
-> have `temporary: true` passwords — log in once via the SPA when it lands
-> (Phase 3) to clear the temp flag, or set `temporary: false` in
-> `infra/keycloak/realm-hrms.json` for headless flows.
-
-### Maven prereqs / quirks
-
-- JDK 21 and Maven 3.9+ on `PATH`.
-- On Windows, if the JDK truststore can't see Maven Central (corporate
-  proxy / MITM), run with `-Djavax.net.ssl.trustStoreType=Windows-ROOT
-  -Djavax.net.ssl.trustStore=NUL` so the JDK trusts whatever Windows trusts.
-- Integration tests use Testcontainers (real PostgreSQL 18). Docker Desktop
-  must be running and reachable. If `mvn test` reports "Could not find a
-  valid Docker environment", enable **Docker Desktop → Settings → General →
-  Expose daemon on `tcp://localhost:2375` without TLS** and set
-  `DOCKER_HOST=tcp://localhost:2375`.
-
-## Repo layout
+The system consists of three foundational layers:
 
 ```
-HRMS/
-├── backend/                 Spring Boot service (added in Phase 1)
-├── frontend/                React app (added in Phase 3)
-├── infra/
-│   ├── docker-compose.yml   local platform stack
-│   ├── keycloak/
-│   │   └── realm-hrms.json  realm definition, auto-imported on first start
-│   ├── postgres/init/       extensions + version guard (run once on empty volume)
-│   └── minio/               (reserved for future bootstrap assets)
-├── docs/
-│   ├── architecture.md      system-level design
-│   ├── rbac-matrix.md       authoritative role × resource × action matrix
-│   └── adr/                 architecture decision records (immutable history)
-├── .env.example             every env var the system reads
-├── .gitignore
-└── .gitattributes
+                          ┌───────────────────────────┐
+                          │     vscode-extension/     │
+                          │   (TypeScript IDE Client) │
+                          └─────────────┬─────────────┘
+                                        │ HTTP / JSON-RPC
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                 .agent/                                     │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │      Retrieval       │  │ AST / Patch Engine   │  │ Validation/Repair  │ │
+│  │  - BM25 + Exact Sym  │  │  - Tree-Sitter AST   │  │  - Compile Check   │ │
+│  │  - Vector/FAISS      │  │  - EditSpan Calc     │  │  - Test Runner     │ │
+│  │  - Cross-Encoder     │  │  - Atomic Rollback   │  │  - Self-Healing    │ │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘ │
+│  ┌──────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │   Inference Router   │  │    Cursor Runtime    │  │   Runtime Server   │ │
+│  │  - Intent Classifier │  │  - Buffer Tracking   │  │  - /retrieve       │ │
+│  │  - Speculative Dec.  │  │  - Inline Executor   │  │  - /apply_patch    │ │
+│  └──────────────────────┘  └──────────────────────┘  └────────────────────┘ │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         repository_intelligence/                            │
+│  ┌────────────────────────┐  ┌─────────────────────┐  ┌───────────────────┐ │
+│  │   Workspace Scanner    │  │ Multi-Lang Parsers  │  │   Symbol Graph    │ │
+│  │  - Monorepo Detection  │  │  - Python, Java, TS │  │  - Call Graph     │ │
+│  │  - File Discovery      │  │  - Type Resolution  │  │  - SQLite Store   │ │
+│  └────────────────────────┘  └─────────────────────┘  └───────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Documentation
+### 1. `.agent/` — Core Agent Runtime
+* **Two-Stage Code Retrieval (`retrieval/`)**: Hybrid lexical search (BM25), exact symbol matching, dense vector embeddings (`faiss_store.py`), and cross-encoder re-ranking.
+* **AST Patch Engine (`engines/`, `execution/`)**: Locates code targets via Tree-Sitter syntax trees across Java, Python, and TypeScript, computing exact `EditSpan` boundaries to apply atomic patches without corruption.
+* **Cursor & Inline Runtime (`apps/cursor_runtime.py`, `execution/cursor_engine.py`)**: Manages live editor coordinates (cursor line/column, open tabs, unsaved buffer diffs) and powers Cmd+K inline modifications.
+* **Self-Healing Verification Loop (`validation/`, `execution/`)**: Runs compile validators, test suites, failure routing, and rule-based repair subgraphs.
 
-- [`docs/architecture.md`](docs/architecture.md) — system design, packaging, conventions
-- [`docs/rbac-matrix.md`](docs/rbac-matrix.md) — what each role can see and do
-- [`docs/adr/`](docs/adr/) — why we made the decisions we made
+### 2. `repository_intelligence/` — Codebase Graph & Symbol Intelligence
+* **Language Parsers (`parsers/`)**: Extracts classes, methods, functions, and interfaces using language-specific Tree-Sitter grammars.
+* **Graph Builders (`indexer/`)**: Maps symbol relationships, call hierarchies, and dependencies into SQLite (`repository_intelligence.db`).
+* **Manifest Service (`manifest/`, `symbol_locator.py`)**: Fast symbol-to-file lookup index.
 
-## Resetting local state
+### 3. `vscode-extension/` — IDE Integration
+* VS Code extension (`vscode-cursor-agent`) connecting the editor interface to the agent backend daemon.
+* Keybindings: `Cmd+K` (macOS) / `Ctrl+K` (Windows) for inline chat and generation.
 
-```powershell
-docker compose -f infra/docker-compose.yml --env-file .env down -v
+---
+
+## 🚀 Getting Started
+
+### 1. Ingest & Index Repository
+```bash
+python .agent/index_repo.py
 ```
 
-The `-v` flag deletes volumes (postgres data, minio data). On next `up`, the realm is re-imported and the documents bucket is recreated.
+### 2. Run Background Agent Server
+```bash
+python -m runtime.server 8085
+```
 
-## Conventions (TL;DR)
+### 3. Ask Codebase Questions (Level 1 & 2 Q&A)
+```bash
+# Query the local agent codebase:
+python ask.py "explain how the query resolver works"
 
-- All timestamps stored as `timestamptz` UTC; `Instant` in Java; format in the frontend with the user's TZ.
-- All money columns are `numeric(18,4)` paired with `currency_code char(3) NOT NULL` (default `INR`). Never use `double`.
-- Primary keys are `uuid DEFAULT uuidv7()`.
-- Soft delete everywhere via `deleted_at timestamptz` — except `audit_log`, which is append-only.
-- Audit on every write; audit on read only for sensitive fields (salary `amount`, document blobs).
-- No salary amounts in logs, ever. `@ToString.Exclude` enforced on sensitive fields.
-- Never edit a committed Flyway migration. Add a new one.
+# Query ANY external codebase (100% read-only, 0 changes to target code):
+python ask.py --repo /path/to/any/spring-app "find the authentication implementation and explain how it works"
+```
+
+### 4. Targeted Code Modifications (Level 3 Surgical Editing)
+```bash
+# Propose a targeted patch with automated syntax validation and git diff approval:
+python edit.py "in math.py, add a check for division by zero"
+
+# Target an external codebase:
+python edit.py --repo /path/to/my-project "in AuthService.java, add null check for token"
+```
+
+### 5. Run Verification Suites
+```bash
+python verify_local_agent.py
+python verify_all.py
+```

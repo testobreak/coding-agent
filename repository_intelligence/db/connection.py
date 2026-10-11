@@ -5,7 +5,7 @@ import os
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:admin@localhost:5432/agent_index"
+    "postgresql://ashish@localhost:5432/local_cursor"
 )
 
 # Determine the absolute path for SQLite fallback
@@ -23,11 +23,9 @@ if DATABASE_URL.startswith("postgresql"):
         with test_engine.connect() as conn:
             pass
         engine = test_engine
-    except Exception:
-        fallback_url = f"sqlite:///{SQLITE_DB_PATH}"
-        print(f"[Database] PostgreSQL connection failed. Falling back to SQLite ({fallback_url})...")
-        DATABASE_URL = fallback_url
-        engine = create_engine(DATABASE_URL)
+    except Exception as e:
+        print(f"[Database] PostgreSQL connection failed: {e}. Falling back to SQLite at: {SQLITE_DB_PATH}")
+        engine = create_engine(f"sqlite:///{SQLITE_DB_PATH}")
 else:
     engine = create_engine(DATABASE_URL)
 
@@ -52,6 +50,25 @@ from sqlalchemy.dialects.postgresql import JSONB
 @compiles(JSONB, "sqlite")
 def compile_jsonb_sqlite(element, compiler, **kw):
     return "JSON"
+
+from sqlalchemy.types import UserDefinedType
+
+class PGVectorType(UserDefinedType):
+    def get_col_spec(self, **kw):
+        return "vector(384)"
+        
+    def bind_processor(self, dialect):
+        def process(value):
+            if value is None:
+                return None
+            if isinstance(value, list):
+                return str(value)
+            return value
+        return process
+
+@compiles(PGVectorType, "sqlite")
+def compile_pgvector_sqlite(element, compiler, **kw):
+    return "TEXT"
 
 Base = declarative_base()
 

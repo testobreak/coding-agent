@@ -10,7 +10,7 @@
 # Usage:
 #   from repository.scanner import RepositoryScanner
 #   scanner = RepositoryScanner(db_conn_factory=get_conn)
-#   repo_id = scanner.scan(repo_root="d:/HRMS", repo_name="HRMS")
+#   repo_id = scanner.scan(repo_root="/path/to/project", repo_name="coding-agent")
 #
 
 import os
@@ -80,6 +80,7 @@ SKIP_EXTENSIONS = {
     ".exe", ".dll", ".so", ".dylib",
     ".pdf", ".docx", ".xlsx",
     ".lock",   # package-lock.json, yarn.lock, etc.
+    ".xml", ".log", ".dumpstream",
 }
 
 MAX_FILE_SIZE = 2 * 1024 * 1024   # skip files > 2 MB

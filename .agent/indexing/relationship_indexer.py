@@ -64,6 +64,9 @@ class RelationshipIndexer:
             # ── USES (all: import-based) ──────────────────────
             rows += self._extract_uses(f, parsed, files, repo_id)
 
+            # ── CALLS (Java method invocations) ────────────────
+            rows += self._extract_calls(f, parsed, names, symbols, repo_id)
+
             if rows:
                 self._insert_relationships(rows)
 
@@ -257,7 +260,7 @@ class RelationshipIndexer:
 
     def _resolve_import(self, import_str: str, file_map: dict, file_row: dict) -> Optional[int]:
         """Try to resolve an import string to a file_id."""
-        # Java: com.acme.hrms.employee.EmployeeService → .../EmployeeService.java
+        # Java: com.acme.app.employee.EmployeeService → .../EmployeeService.java
         # TS:   ../services/employeeService → .../employeeService.ts
         clean = import_str.replace("import ", "").split(" ")[0].rstrip(";").strip()
         # Remove leading { } for named imports
@@ -270,6 +273,118 @@ class RelationshipIndexer:
             if base.lower() == last.lower():
                 return fid
         return None
+
+    def _extract_calls(self, file_row: dict, parsed, names_map: dict, qualified_map: dict, repo_id: int) -> list:
+        rows = []
+        lang = file_row["language"]
+        if lang != "java":
+            return rows
+
+        try:
+            import tree_sitter_java as ts_java
+            from tree_sitter import Language, Parser
+            from parsers.base import node_text
+
+            lang_engine = Language(ts_java.language())
+            parser = Parser(lang_engine)
+            src = open(file_row["path"], encoding="utf-8", errors="replace").read()
+            src_b = src.encode("utf-8")
+            tree = parser.parse(src_b)
+
+            # Map import class name to fully qualified name
+            imports_map = {}
+            for imp in parsed.imports:
+                fqn = imp.name
+                short_name = fqn.split(".")[-1]
+                imports_map[short_name] = fqn
+
+            # Scan class fields to resolve field types
+            class_fields = {}
+            
+            def scan_fields(node):
+                if node.type == "field_declaration":
+                    type_node = node.child_by_field_name("type")
+                    declarators = node.children_by_field_name("declarator")
+                    if type_node and declarators:
+                        type_name = node_text(type_node, src_b)
+                        for dec in declarators:
+                            var_name_node = dec.child_by_field_name("name")
+                            if var_name_node:
+                                var_name = node_text(var_name_node, src_b)
+                                class_fields[var_name] = type_name
+                for child in node.children:
+                    scan_fields(child)
+
+            scan_fields(tree.root_node)
+
+            # Walk and resolve method calls inside each method declaration
+            def walk_methods(node, current_class=None, current_method=None, current_method_sym_id=None):
+                nonlocal rows
+                
+                if node.type == "class_declaration":
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        current_class = node_text(name_node, src_b)
+                elif node.type == "method_declaration":
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        method_name = node_text(name_node, src_b)
+                        current_method = method_name
+                        current_method_sym_id = None
+                        for qn, sid in qualified_map.items():
+                            if current_class and current_class.lower() in qn.lower() and method_name.lower() in qn.lower():
+                                current_method_sym_id = sid
+                                break
+                        if not current_method_sym_id:
+                            current_method_sym_id = names_map.get(method_name)
+
+                if node.type == "method_invocation" and current_method_sym_id:
+                    name_node = node.child_by_field_name("name")
+                    receiver_node = node.child_by_field_name("object")
+                    
+                    if name_node:
+                        called_method = node_text(name_node, src_b)
+                        receiver = node_text(receiver_node, src_b) if receiver_node else "this"
+                        
+                        receiver_type = None
+                        if receiver == "this" or receiver == "super":
+                            receiver_type = current_class
+                        else:
+                            receiver_type = class_fields.get(receiver)
+                            
+                        target_class_fqn = None
+                        if receiver_type:
+                            target_class_fqn = imports_map.get(receiver_type, f"{file_row['relative_path'].replace('/', '.')[:-5]}.{receiver_type}")
+                        
+                        target_method_sym_id = None
+                        if target_class_fqn:
+                            target_qn = f"{target_class_fqn}.{called_method}"
+                            for qn, sid in qualified_map.items():
+                                if qn.lower() == target_qn.lower() or qn.lower().endswith("." + target_qn.lower()):
+                                    target_method_sym_id = sid
+                                    break
+                                    
+                        if not target_method_sym_id:
+                            target_method_sym_id = names_map.get(called_method)
+                            
+                        if target_method_sym_id:
+                            rows.append(self._rel_row(
+                                repo_id,
+                                current_method_sym_id, file_row["id"], f"{current_class}.{current_method}",
+                                target_method_sym_id, None, called_method,
+                                "CALLS"
+                            ))
+                            self.extends_count += 1
+
+                for child in node.children:
+                    walk_methods(child, current_class, current_method, current_method_sym_id)
+
+            walk_methods(tree.root_node)
+        except Exception as e:
+            print(f"[RelationshipIndexer] CALLS extraction exception: {e}")
+            self.errors += 1
+            
+        return rows
 
     # =========================================================
     # TESTS: naming convention detection

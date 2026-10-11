@@ -1,0 +1,10 @@
+{
+  "name": "coding-agent",
+  "project_type": "personal_coding_agent",
+  "description": "Personal autonomous local coding agent optimized for Ollama",
+  "project_units": [
+    "agent_core",
+    "repository_intelligence",
+    "vscode_extension"
+  ]
+}

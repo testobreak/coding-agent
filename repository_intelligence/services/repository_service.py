@@ -33,7 +33,7 @@ from repository_intelligence.models.symbol import (
 
 class RepositoryService:
 
-    def __init__(self):
+    def __init__(self, model_service=None):
 
         self.scanner = (
             RepositoryScanner()
@@ -47,8 +47,9 @@ class RepositoryService:
         self.relationship_builder = (
             RelationshipBuilder()
         )
+        # Inject model_service so EmbeddingBuilder shares the already-loaded model
         self.embedding_builder = (
-            EmbeddingBuilder()
+            EmbeddingBuilder(model_service=model_service)
         )
         Base.metadata.create_all(bind=engine)
 
@@ -214,7 +215,7 @@ class RepositoryService:
         repository = (
             session.query(Repository)
             .filter(Repository.root_path == root_path)
-            .one_or_none()
+            .first()
         )
 
         if repository:
@@ -668,6 +669,7 @@ class RepositoryService:
         source_text: str
     ) -> None:
 
+        vec = self.embedding_builder.build(source_text)
         session.add(
             Embedding(
                 repository_id=repository.id,
@@ -678,7 +680,8 @@ class RepositoryService:
                 ),
                 embedding_model=self.embedding_builder.model_name,
                 dimensions=self.embedding_builder.dimensions,
-                vector=self.embedding_builder.build(source_text),
+                vector=vec,
+                vector_embedding=vec,
                 metadata_={
                     "path": file_row.path,
                     "language": file_row.language
@@ -702,6 +705,7 @@ class RepositoryService:
             if part
         )
 
+        vec = self.embedding_builder.build(text)
         session.add(
             Embedding(
                 repository_id=repository.id,
@@ -711,7 +715,8 @@ class RepositoryService:
                 content_hash=self.embedding_builder.content_hash(text),
                 embedding_model=self.embedding_builder.model_name,
                 dimensions=self.embedding_builder.dimensions,
-                vector=self.embedding_builder.build(text),
+                vector=vec,
+                vector_embedding=vec,
                 metadata_={
                     "qualified_name": symbol.qualified_name,
                     "symbol_type": symbol.symbol_type

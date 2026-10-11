@@ -10,7 +10,8 @@ class ExecutionValidator:
 
     ALLOWED_TOOLS = {
         # filesystem
-        "list_files",
+        "query_manifest",
+        "lookup_symbol",
         "search_code",
         "read_file",
         "semantic_retrieve",
@@ -141,10 +142,19 @@ class ExecutionValidator:
             )
 
         # =============================================
+        # lookup_symbol
+        # =============================================
+
+        if tool == "lookup_symbol":
+            symbol = args.get("symbol") or args.get("symbol_name")
+            if not symbol:
+                raise RuntimeError("lookup_symbol requires 'symbol' or 'symbol_name'")
+
+        # =============================================
         # read_file
         # =============================================
 
-        if tool == "read_file":
+        elif tool == "read_file":
 
             path = args.get(
                 "path"
