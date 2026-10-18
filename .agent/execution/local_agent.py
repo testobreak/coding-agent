@@ -19,6 +19,9 @@ from typing import List, Dict, Any, Optional, Callable
 import difflib
 from inference.ollama_client import OllamaClient, OllamaResponse, OllamaTelemetry
 from validation.fast_validator import FastValidator
+from retrieval.python_span_selector import PythonSpanSelector
+from retrieval.exact_reference_resolver import ExactReferenceResolver
+from retrieval.candidate_merger import CandidateMerger, MergeResult
 
 
 @dataclass
@@ -81,6 +84,7 @@ class LocalAgent:
     ):
         self.repo_root = Path(repo_root or os.getcwd()).resolve()
         self.ollama = OllamaClient(base_url=ollama_url, model=model, keep_alive="30m")
+        self.python_span_selector = PythonSpanSelector()
         self.max_context_chars = max_context_chars
         self._cached_source_files: Optional[List[Path]] = None
 
@@ -97,6 +101,23 @@ class LocalAgent:
         self._cached_source_files = source_files
         return self._cached_source_files
 
+    @staticmethod
+    def _implementation_score(line: str) -> float:
+        """Prefer executable operations over descriptions and imports."""
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            return 0.0
+        score = 0.0
+        if re.search(r"\b(?:self\.)?\w+\.\w+\s*\(", stripped):
+            score += 4.0
+        if re.search(r"\b(?:return|yield|raise|await)\b", stripped):
+            score += 2.0
+        if re.search(r"\b(?:for|while|if|with)\b", stripped):
+            score += 1.0
+        if stripped.startswith(("import ", "from ")):
+            score -= 3.0
+        return score
+
     def extract_search_terms(self, query: str) -> List[str]:
         """Extracts significant identifiers and keywords from user query."""
         stopwords = {
@@ -111,6 +132,14 @@ class LocalAgent:
             low = t.lower()
             if low not in stopwords and len(t) > 2:
                 terms.append(t)
+                # Light morphological stemming for natural language queries
+                if low.endswith("ing") and len(low) > 5 and low[:-3] not in stopwords:
+                    terms.append(t[:-3])
+                elif low.endswith("ed") and len(low) > 4 and low[:-2] not in stopwords:
+                    terms.append(t[:-2])
+                elif low.endswith("s") and len(low) > 4 and not low.endswith("ss") and low[:-1] not in stopwords:
+                    terms.append(t[:-1])
+
         unique_terms = []
         for t in terms:
             if t not in unique_terms:
@@ -120,21 +149,39 @@ class LocalAgent:
     def deterministic_search(self, terms: List[str], max_snippets: int = 5) -> List[RetrievedSnippet]:
         """
         Fast deterministic scan across source files for matching terms.
-        Prioritizes file paths, class/function definitions, and exact hits.
+        Prioritizes:
+        - Multi-term co-occurrence in snippet window & file
+        - Active implementation files (execution/, inference/, ask.py)
+        - Exact class/function definitions and invocations
+        - Per-file diversity (max 1 snippet per file to prevent single-file crowding)
+        - Demotes tests and legacy/shadowed packages unless explicitly requested.
         Runs in < 50ms without touching an LLM.
         """
-        snippets: List[RetrievedSnippet] = []
+        raw_candidates: List[Dict[str, Any]] = []
         if not terms:
-            return snippets
+            return []
 
+        is_test_query = any(t.lower() in ("test", "tests", "testing", "spec", "mock") for t in terms)
         source_files = self._get_source_files()
 
-        # Score files based on matches
+        # Pass 1: Fast lexical scan (0 AST parsing calls)
         for file_path in source_files:
             rel_path = str(file_path.relative_to(self.repo_root))
-            
-            # Check if file path matches any term (high relevance boost)
-            path_matches = sum(1 for t in terms if t.lower() in rel_path.lower())
+            path_lower = rel_path.lower()
+            path_terms = [t for t in terms if t.lower() in path_lower]
+
+            is_test_file = (
+                "/tests/" in path_lower or path_lower.startswith("tests/") or
+                Path(rel_path).name.startswith("test_") or Path(rel_path).name.endswith("_test.py") or
+                Path(rel_path).name.startswith("verify_")
+            )
+            is_legacy_dir = "/llm/" in path_lower or path_lower.startswith("llm/")
+            is_active_core = (
+                rel_path in ("ask.py", "edit.py") or
+                "/execution/" in path_lower or
+                "/inference/" in path_lower or
+                "/context/" in path_lower
+            )
 
             try:
                 content = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -144,41 +191,133 @@ class LocalAgent:
             lines = content.splitlines()
             for line_idx, line in enumerate(lines):
                 line_lower = line.lower()
-                for term in terms:
-                    term_lower = term.lower()
-                    if term_lower in line_lower:
-                        # Determine window around match
-                        start = max(0, line_idx - 10)
-                        end = min(len(lines), line_idx + 15)
-                        snippet_text = "\n".join(lines[start:end])
+                matched_on_line = [t for t in terms if t.lower() in line_lower]
+                if not matched_on_line:
+                    continue
 
-                        # Boost score if definition (def, class, function, interface)
-                        is_def = bool(re.search(r"\b(class|def|function|interface|public|router)\b", line))
-                        score = 2.0 if is_def else 1.0
-                        if path_matches:
-                            score += 1.5 * path_matches
+                # Fast 25-line window
+                start = max(0, line_idx - 10)
+                end = min(len(lines), line_idx + 15)
+                snippet_text = "\n".join(lines[start:end])
+                window_lower = snippet_text.lower()
+                terms_in_window = [
+                    t for t in terms
+                    if t.lower() in window_lower
+                ]
 
-                        snippets.append(RetrievedSnippet(
-                            file_path=rel_path,
-                            start_line=start + 1,
-                            end_line=end,
-                            content=snippet_text,
-                            relevance_score=score,
-                            matched_term=term
-                        ))
+                # Boost score if definition (def, class, function, interface)
+                is_def = bool(re.search(r"\b(class|def|function|interface|public|router|async\s+def)\b", line))
+                has_def_in_window = any(re.search(r"^\s*(class|def|async\s+def)\s+\w+", l) for l in lines[start:end])
+                is_call = bool(re.search(r"\b(ollama|client|agent)\.(\w+)\(|\bOllamaClient\(|\bLocalAgent\(", line, re.IGNORECASE))
 
-        # Sort snippets by score and de-duplicate overlapping ranges
-        snippets.sort(key=lambda s: s.relevance_score, reverse=True)
-        deduped: List[RetrievedSnippet] = []
+                score = 1.0
+                if is_def:
+                    score += 2.0
+                elif has_def_in_window:
+                    score += 1.0
+
+                if is_call:
+                    score += 2.5
+
+                score += self._implementation_score(line)
+
+                # Multi-term co-occurrence boost (highest relevance signal)
+                if len(terms_in_window) > 1:
+                    score += 3.5 * (len(terms_in_window) - 1)
+
+                # Path matches boost
+                if path_terms:
+                    score += 1.5 * len(path_terms)
+
+                # Active core orchestrator boost
+                if is_active_core:
+                    score += 2.0
+
+                # Top-priority active runtime chain boost
+                if rel_path in ("ask.py", "edit.py") or rel_path.endswith("local_agent.py") or rel_path.endswith("inference/ollama_client.py"):
+                    score += 2.5
+
+                # Test penalty (unless user asked about tests)
+                if is_test_file and not is_test_query:
+                    score -= 15.0
+
+                # Legacy demotion (e.g. shadowed .agent/llm/ vs active .agent/inference/)
+                if is_legacy_dir:
+                    score -= 4.0
+
+                raw_candidates.append({
+                    "score": score,
+                    "file_path": file_path,
+                    "rel_path": rel_path,
+                    "line_idx": line_idx,
+                    "start": start,
+                    "end": end,
+                    "snippet_text": snippet_text,
+                    "matched_term": matched_on_line[0],
+                    "content": content,
+                })
+
+        # Sort candidate matches by score descending
+        raw_candidates.sort(key=lambda c: c["score"], reverse=True)
+
+        # Enforce diversity: select top candidates (max 1 per file)
+        selected_candidates = []
         seen_files = set()
 
-        for s in snippets:
-            key = (s.file_path, s.start_line // 20)
-            if key not in seen_files:
-                seen_files.add(key)
-                deduped.append(s)
-            if len(deduped) >= max_snippets:
+        for c in raw_candidates:
+            if c["rel_path"] not in seen_files:
+                seen_files.add(c["rel_path"])
+                selected_candidates.append(c)
+            if len(selected_candidates) >= max_snippets:
                 break
+
+        # If not enough diverse files found, fill remaining slots from top candidate files
+        if len(selected_candidates) < max_snippets:
+            seen_keys = {(c["rel_path"], c["start"] // 20) for c in selected_candidates}
+            for c in raw_candidates:
+                key = (c["rel_path"], c["start"] // 20)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    selected_candidates.append(c)
+                if len(selected_candidates) >= max_snippets:
+                    break
+
+        # Pass 2: Selective AST Span Expansion ONLY on the winning candidates (max 5 calls total)
+        deduped: List[RetrievedSnippet] = []
+        for c in selected_candidates:
+            start = c["start"]
+            end = c["end"]
+            snippet_text = c["snippet_text"]
+            file_path = c["file_path"]
+
+            if file_path.suffix.lower() == ".py":
+                ast_spans = self.python_span_selector.select_relevant(
+                    file_path=str(file_path),
+                    source=c["content"],
+                    query_terms=terms,
+                    max_spans=3,
+                    max_lines_per_span=25,
+                )
+                if ast_spans:
+                    for ast_span in ast_spans:
+                        deduped.append(RetrievedSnippet(
+                            file_path=c["rel_path"],
+                            start_line=ast_span.start_line,
+                            end_line=ast_span.end_line,
+                            content=ast_span.content,
+                            relevance_score=c["score"] + (ast_span.score * 0.05),
+                            matched_term=c["matched_term"],
+                        ))
+                    continue
+
+            deduped.append(RetrievedSnippet(
+                file_path=c["rel_path"],
+                start_line=start + 1,
+                end_line=end,
+                content=snippet_text,
+                relevance_score=c["score"],
+                matched_term=c["matched_term"],
+            ))
 
         return deduped
 
@@ -204,10 +343,35 @@ class LocalAgent:
 
         return "".join(sections)
 
+    def retrieve_file_candidates(
+        self,
+        query: str,
+        max_candidates: int = 12,
+    ) -> MergeResult:
+        """
+        Resolves explicit filenames and merges them with
+        lexical search results.
+        No LLM calls or source-code expansion.
+        """
+        resolver = ExactReferenceResolver(
+            repo_root=str(self.repo_root),
+            source_files=self._get_source_files(),
+        )
+        exact_references = resolver.resolve(query)
+        terms = self.extract_search_terms(query)
+        lexical_snippets = self.deterministic_search(terms)
+        merger = CandidateMerger()
+        return merger.merge(
+            exact_references=exact_references,
+            lexical_snippets=lexical_snippets,
+            max_candidates=max_candidates,
+        )
+
     def ask(
         self,
         query: str,
         stream_callback: Optional[Callable[[str], None]] = None,
+        num_predict: int = 256,
     ) -> AgentResult:
         """
         Executes Level 1 / Level 2 Code Q&A or Explanation:
@@ -231,14 +395,14 @@ class LocalAgent:
             "You are a precise, expert software engineering assistant. "
             "Analyze the provided code snippets to directly answer the user's question. "
             "Cite the specific file names and line numbers where appropriate. "
-            "Be direct, concise, and technical. Avoid filler conversational phrases."
+            "Be direct, concise, and technical. Keep answers focused (under 200 words). Avoid filler conversational phrases."
         )
 
         user_prompt = (
             f"Codebase Context:\n"
             f"```\n{context_block}\n```\n\n"
             f"User Question: {query}\n\n"
-            f"Answer with specific references to the files and code above:"
+            f"Provide a concise, direct answer citing specific file paths and line numbers:"
         )
 
         # Step 5: Ollama execution
@@ -247,6 +411,7 @@ class LocalAgent:
             system_prompt=system_prompt,
             temperature=0.2,
             num_ctx=4096,
+            num_predict=num_predict,
             stream_callback=stream_callback,
         )
 

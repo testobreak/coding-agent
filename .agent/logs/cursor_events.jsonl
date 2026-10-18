@@ -36,3 +36,5 @@
 {"event_type": "retrieval_completed", "request_id": "unknown", "timestamp": 1783268243.745763, "payload": {"query": "how to authenticate keycloak users", "hit_rank": 0, "duplicate_candidate_ratio": 0.0}}
 {"event_type": "retrieval_completed", "request_id": "unknown", "timestamp": 1783268244.590698, "payload": {"query": "Add logging to EmployeeService", "hit_rank": 0, "duplicate_candidate_ratio": 0.0}}
 {"event_type": "retrieval_completed", "request_id": "unknown", "timestamp": 1791634708.768667, "payload": {"query": "Add logging to EmployeeService", "hit_rank": 0, "duplicate_candidate_ratio": 0.0}}
+{"event_type": "retrieval_completed", "request_id": "unknown", "timestamp": 1791699787.487653, "payload": {"query": "Add logging to EmployeeService", "hit_rank": 0, "duplicate_candidate_ratio": 0.0}}
+{"event_type": "retrieval_completed", "request_id": "unknown", "timestamp": 1791721253.439587, "payload": {"query": "Add logging to EmployeeService", "hit_rank": 0, "duplicate_candidate_ratio": 0.0}}

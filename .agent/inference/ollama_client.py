@@ -25,15 +25,19 @@ class OllamaTelemetry:
     tokens_per_second: float = 0.0
     load_duration_ms: float = 0.0
     total_duration_ms: float = 0.0
+    done_reason: str = ""
 
     def summary(self) -> str:
-        return (
+        s = (
             f"Model: {self.model} | "
             f"Prompt: {self.prompt_tokens} toks ({self.prompt_eval_duration_ms:.1f}ms) | "
             f"Output: {self.output_tokens} toks ({self.generation_duration_ms:.1f}ms) | "
             f"Speed: {self.tokens_per_second:.1f} tok/s | "
             f"Total: {self.total_duration_ms:.1f}ms"
         )
+        if self.done_reason:
+            s += f" | Done: {self.done_reason}"
+        return s
 
 
 @dataclass
@@ -77,6 +81,7 @@ class OllamaClient:
         temperature: float = 0.2,
         num_ctx: int = 4096,
         stream_callback: Optional[Callable[[str], None]] = None,
+        num_predict: Optional[int] = None,
     ) -> OllamaResponse:
         """
         Executes a completion request against local Ollama.
@@ -92,6 +97,11 @@ class OllamaClient:
                 "num_ctx": num_ctx,
             },
         }
+
+        if num_predict is not None:
+            if num_predict < 1:
+                raise ValueError("num_predict must be positive")
+            payload["options"]["num_predict"] = num_predict
 
         if system_prompt:
             payload["system"] = system_prompt
@@ -139,6 +149,8 @@ class OllamaClient:
         if eval_duration_ms > 0 and output_tokens > 0:
             tokens_per_sec = output_tokens / (eval_duration_ms / 1000.0)
 
+        done_reason = final_data.get("done_reason", "")
+
         telemetry = OllamaTelemetry(
             model=self.model,
             prompt_tokens=prompt_tokens,
@@ -148,6 +160,7 @@ class OllamaClient:
             tokens_per_second=tokens_per_sec,
             load_duration_ms=load_duration_ms,
             total_duration_ms=total_elapsed_ms,
+            done_reason=done_reason,
         )
 
         return OllamaResponse(

@@ -36,7 +36,8 @@ import uuid
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     if isinstance(dbapi_connection, sqlite3.Connection):
-        dbapi_connection.create_function("gen_random_uuid", 0, lambda: str(uuid.uuid4()))
+        sqlite3.register_adapter(uuid.UUID, lambda u: u.hex)
+        dbapi_connection.create_function("gen_random_uuid", 0, lambda: uuid.uuid4().hex)
 
 SessionLocal = sessionmaker(
     autocommit=False,

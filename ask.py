@@ -45,6 +45,13 @@ def parse_args():
         default=os.getenv("CODING_AGENT_MODEL", "qwen2.5-coder:7b"),
         help="Ollama model name (default: qwen2.5-coder:7b)",
     )
+    parser.add_argument(
+        "-t", "--max-tokens",
+        dest="max_tokens",
+        type=int,
+        default=int(os.getenv("CODING_AGENT_MAX_TOKENS", 256)),
+        help="Maximum generation tokens / output budget (default: 256)",
+    )
     return parser.parse_args()
 
 
@@ -61,6 +68,7 @@ def main():
     print("🤖 PERSONAL CODING AGENT (coding-agent)")
     print(f"📁 Target Codebase:  {target_repo} [READ-ONLY]")
     print(f"🧠 Local Model:      {args.model} via Ollama")
+    print(f"🎯 Output Budget:    {args.max_tokens} tokens")
     print(f"📌 Query:            {query}")
     print("═" * 70)
 
@@ -82,7 +90,7 @@ def main():
         sys.stdout.write(chunk)
         sys.stdout.flush()
 
-    result = agent.ask(query, stream_callback=print_stream)
+    result = agent.ask(query, stream_callback=print_stream, num_predict=args.max_tokens)
 
     print("\n" + "-" * 70)
     print("\n📊 TELEMETRY DASHBOARD")
@@ -97,6 +105,10 @@ def main():
     print(f"  • Generation Time:       {result.telemetry.generation_duration_ms:.2f} ms")
     print(f"  • Generation Speed:      {result.telemetry.tokens_per_second:.2f} tokens/sec")
     print(f"  • Total Turnaround:      {result.telemetry.total_duration_ms:.2f} ms")
+    if getattr(result.telemetry, "done_reason", ""):
+        print(f"  • Stop Reason:           {result.telemetry.done_reason}")
+        if result.telemetry.done_reason == "length":
+            print("    ⚠️  NOTICE: Output reached token limit ('length'). Consider increasing num_predict if answer feels clipped.")
     print("═" * 70 + "\n")
 
 
